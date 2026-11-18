@@ -1,0 +1,1203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Разбор чеков и взаимозачёт</title>
+<script src="https://telegram.org/js/telegram-web-app.js?65"></script>
+<style>
+  :root {
+    --bg: #F6F5F1; --surface: #FFFFFF; --ink: #1C1B19; --ink-soft: #6B6862;
+    --line: #E4E1D9; --left-color: #4A7C6F; --right-color: #C6572A;
+    --accent: #C6572A; --danger: #B23A34; --shadow: 0 20px 40px -20px rgba(28,27,25,0.25);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #171613; --surface: #232019; --ink: #F1EFE8; --ink-soft: #9C978C;
+      --line: #35322A; --shadow: 0 20px 40px -20px rgba(0,0,0,0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171613; --surface: #232019; --ink: #F1EFE8; --ink-soft: #9C978C;
+    --line: #35322A; --shadow: 0 20px 40px -20px rgba(0,0,0,0.6);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px;
+  }
+  .app { width: 100%; max-width: 480px; }
+  .header { margin-bottom: 18px; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .header .shop { font-size: 13px; letter-spacing: 0.02em; color: var(--ink-soft); margin: 0 0 4px 0; }
+  .header h1 { font-size: 22px; font-weight: 650; margin: 0; line-height: 1.2; }
+  .header .back-link { font-size: 13px; color: var(--ink-soft); text-decoration: underline; cursor: pointer; background: none; border: none; padding: 0; white-space: nowrap; }
+  .header .back-link:hover { color: var(--ink); }
+
+  .progress-track { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin: 0 0 22px 0; }
+  .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.35s ease; border-radius: 999px; }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 24px 22px; box-shadow: var(--shadow); margin-bottom: 16px; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 13px; color: var(--ink-soft); margin-bottom: 8px; }
+
+  input[type="text"], textarea, select {
+    width: 100%; padding: 11px 13px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink); font-size: 15px; font-family: inherit;
+  }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; resize: vertical; min-height: 120px; }
+  input[type="text"]:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+
+  .participant-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+  .participant-row input { flex: 1; }
+  .participant-row .rm-btn { border: none; background: none; color: var(--ink-soft); font-size: 18px; cursor: pointer; width: 28px; flex-shrink: 0; }
+  .participant-row .rm-btn:hover { color: var(--danger); }
+  .add-participant-btn { width: 100%; padding: 10px; border-radius: 10px; border: 1px dashed var(--line); background: transparent; color: var(--ink-soft); font-size: 14px; cursor: pointer; margin-top: 2px; }
+  .add-participant-btn:hover { border-color: var(--accent); color: var(--ink); }
+
+  .primary-btn { width: 100%; padding: 14px; border-radius: 12px; border: none; background: var(--ink); color: var(--bg); font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .primary-btn:hover { opacity: 0.9; }
+  .primary-btn:disabled { opacity: 0.4; cursor: default; }
+  .secondary-btn { width: 100%; padding: 13px; border-radius: 12px; border: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .secondary-btn:hover { border-color: var(--accent); }
+  .link-btn { display: block; width: 100%; text-align: center; background: none; border: none; color: var(--ink-soft); font-size: 13px; text-decoration: underline; cursor: pointer; padding: 10px 0; }
+  .link-btn:hover { color: var(--ink); }
+
+  .primary-btn:focus-visible, .secondary-btn:focus-visible, .link-btn:focus-visible,
+  .chip:focus-visible, .stepper-ctrl button:focus-visible, .back-item-btn:focus-visible,
+  .add-participant-btn:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  .section-divider { height: 1px; background: var(--line); margin: 20px 0; border: none; }
+
+  .detail-shop-label { font-weight: 650; margin: 0 0 18px 0; }
+  .saved-title { font-size: 16px; font-weight: 650; margin: 0 0 6px 0; }
+  .saved-subtitle { font-size: 13px; color: var(--ink-soft); margin: 0 0 18px 0; }
+
+  .error-box { background: rgba(178,58,52,0.1); border: 1px solid var(--danger); color: var(--danger); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 14px; display: none; }
+  .error-box.show { display: block; }
+
+  .section-label { font-size: 12px; color: var(--ink-soft); margin: 0 0 10px 0; }
+  .section-label.shared-label { margin-top: 18px; }
+  .section-label.currency-group { margin-top: 14px; }
+  .steps-list { margin: 0 0 4px 0; padding-left: 20px; font-size: 14px; line-height: 1.5; }
+  .steps-list li { margin-bottom: 10px; }
+
+  /* Home screen: receipt list */
+  .receipt-card { display: flex; align-items: center; gap: 12px; padding: 13px 14px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; }
+  .receipt-card .r-info { flex: 1; min-width: 0; }
+  .receipt-card .r-shop { font-size: 14px; font-weight: 650; }
+  .receipt-card .r-meta { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+  .receipt-card .r-total { font-size: 14px; font-weight: 700; color: var(--accent); white-space: nowrap; }
+  .receipt-card .rm-btn { border: none; background: none; color: var(--ink-soft); font-size: 17px; cursor: pointer; }
+  .receipt-card .rm-btn:hover { color: var(--danger); }
+  .receipt-card.confirm-delete {
+    background: rgba(178,58,52,0.08); border-color: var(--danger); gap: 10px;
+  }
+  .confirm-text { flex: 1; font-size: 13px; color: var(--danger); font-weight: 600; }
+  .confirm-yes-btn, .confirm-no-btn {
+    padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .confirm-yes-btn { border: none; background: var(--danger); color: #fff; }
+  .confirm-yes-btn:hover { opacity: 0.85; }
+  .confirm-no-btn { border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .confirm-no-btn:hover { border-color: var(--ink-soft); }
+  .empty-hint { text-align: center; color: var(--ink-soft); font-size: 13px; padding: 18px 0; }
+
+  .preview-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; max-height: 320px; overflow-y: auto; }
+  .preview-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; }
+  .preview-row .info { flex: 1; min-width: 0; }
+  .preview-row .p-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .preview-row .p-meta { font-size: 12px; color: var(--ink-soft); }
+  .preview-row .p-sum { font-size: 14px; font-weight: 650; color: var(--accent); white-space: nowrap; }
+  .preview-row .del-btn { border: none; background: none; color: var(--ink-soft); font-size: 18px; cursor: pointer; padding: 0 2px; line-height: 1; }
+  .preview-row .del-btn:hover { color: var(--danger); }
+  .preview-row .edit-btn { border: none; background: none; color: var(--ink-soft); font-size: 15px; cursor: pointer; padding: 0 4px; line-height: 1; }
+  .preview-row .edit-btn:hover { color: var(--accent); }
+  .preview-row .edit-save-btn { border: none; background: none; color: var(--left-color); font-size: 18px; font-weight: 700; cursor: pointer; padding: 0 4px; line-height: 1; }
+  .preview-row .edit-save-btn:hover { opacity: 0.7; }
+  .edit-price-input {
+    width: 90px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--surface); color: var(--ink); font-size: 13px; font-family: inherit;
+  }
+  .edit-price-input:focus { outline: none; }
+  .preview-total { display: flex; justify-content: space-between; font-size: 14px; padding: 4px 4px 16px 4px; color: var(--ink-soft); }
+  .preview-total b { color: var(--ink); }
+  .add-item-box { background: var(--bg); border: 1px dashed var(--line); border-radius: 12px; padding: 16px; margin-bottom: 22px; }
+  .add-item-fields { display: grid; grid-template-columns: 1fr 64px 92px; gap: 8px; margin-bottom: 12px; }
+  .add-item-fields .field { margin-bottom: 0; }
+  .qty-input { text-align: center; }
+
+  .assign-card { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); padding: 24px 22px; margin-bottom: 16px; }
+  .assign-card .qty { font-size: 12px; color: var(--ink-soft); letter-spacing: 0.02em; }
+  .assign-card .name { font-size: 21px; font-weight: 650; line-height: 1.25; margin: 8px 0 2px 0; }
+  .assign-card .price { font-size: 24px; font-weight: 700; color: var(--accent); margin-bottom: 18px; }
+
+  .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { padding: 9px 16px; border-radius: 999px; border: 1.5px solid var(--line); background: var(--bg); color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer; }
+  .chip.selected { border-color: var(--accent); background: rgba(198,87,42,0.12); color: var(--accent); }
+  .chip.selected.common { border-color: var(--left-color); background: rgba(74,124,111,0.12); color: var(--left-color); }
+  .chip.selected.include { border-color: var(--left-color); background: rgba(74,124,111,0.12); color: var(--left-color); }
+
+  .stepper-list { display: flex; flex-direction: column; gap: 10px; }
+  .stepper-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .stepper-row .pname { font-size: 14px; font-weight: 600; flex: 1; }
+  .stepper-ctrl { display: flex; align-items: center; gap: 10px; }
+  .stepper-ctrl button { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font-size: 16px; cursor: pointer; }
+  .stepper-ctrl button:hover:not(:disabled) { border-color: var(--accent); }
+  .stepper-ctrl button:disabled { opacity: 0.3; cursor: default; }
+  .stepper-ctrl .n { min-width: 18px; text-align: center; font-weight: 700; }
+  .hint-line { margin-top: 10px; font-size: 12px; color: var(--ink-soft); text-align: center; }
+
+  .nav-row { display: flex; gap: 10px; }
+  .nav-row .primary-btn { margin-top: 0; }
+  .back-item-btn { padding: 14px 18px; border-radius: 12px; border: 1px solid var(--line); background: transparent; color: var(--ink-soft); font-size: 14px; cursor: pointer; }
+  .back-item-btn:hover { border-color: var(--accent); color: var(--ink); }
+  .back-item-btn:disabled { opacity: 0.3; cursor: default; }
+
+  /* Settle screen */
+  .balance-row { display: flex; justify-content: space-between; align-items: baseline; padding: 13px 15px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; }
+  .balance-row .b-name { font-size: 14px; font-weight: 600; }
+  .balance-row .b-note { font-size: 11px; font-weight: 400; color: var(--ink-soft); }
+  .balance-row .b-value { font-size: 15px; font-weight: 700; }
+  .balance-row .b-value.pos { color: var(--left-color); }
+  .balance-row .b-value.neg { color: var(--right-color); }
+  .balance-row .b-value.zero { color: var(--ink-soft); }
+
+  .transfer-row { display: flex; align-items: center; gap: 10px; padding: 14px 15px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; }
+  .transfer-row .t-arrow { color: var(--ink-soft); font-size: 14px; }
+  .transfer-row .t-names { flex: 1; font-size: 14px; font-weight: 650; }
+  .transfer-row .t-amount { font-size: 16px; font-weight: 700; color: var(--accent); }
+  .all-settled { text-align: center; padding: 30px 10px; color: var(--ink-soft); font-size: 14px; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="header">
+    <div>
+      <p class="shop" id="shopLine">Твои чеки</p>
+      <h1 id="title">Домохозяйство</h1>
+    </div>
+    <button class="back-link hidden" id="headerBackBtn">← назад</button>
+  </div>
+
+  <div class="progress-track hidden" id="progressTrack"><div class="progress-fill" id="progressFill"></div></div>
+
+  <!-- HOME SCREEN -->
+  <div id="homeScreen">
+    <div class="panel">
+      <p class="section-label">Участники</p>
+      <div id="participantsList"></div>
+      <button type="button" class="add-participant-btn" id="addParticipantBtn">+ добавить участника</button>
+      <p class="error-box" id="participantsError"></p>
+    </div>
+
+    <div class="panel">
+      <p class="section-label">Чеки (<span id="receiptsCount">0</span>)</p>
+      <div id="receiptsList"></div>
+      <p class="empty-hint hidden" id="noReceiptsHint">Ещё нет ни одного чека</p>
+      <p class="error-box" id="homeError"></p>
+      <button class="primary-btn" id="addReceiptBtn">+ Добавить чек</button>
+    </div>
+
+    <button class="secondary-btn" id="settleBtn">Свести баланс →</button>
+    <button class="link-btn" id="promptLinkBtn">Показать промпт для распознавания чека</button>
+  </div>
+
+  <!-- PROMPT SCREEN -->
+  <div class="panel hidden" id="promptScreen">
+    <div class="field">
+      <label>Промпт для модели (скопируй и отправь вместе с фото чека)</label>
+      <textarea id="promptTextarea" readonly></textarea>
+    </div>
+    <button class="secondary-btn" id="copyPromptBtn">Скопировать промпт</button>
+    <button class="link-btn" id="backFromPromptBtn">Назад</button>
+  </div>
+
+  <!-- NEW RECEIPT: payer + shop -->
+  <div class="panel hidden" id="payerScreen">
+    <div class="field">
+      <label>Магазин / название чека</label>
+      <input type="text" id="shopNameInput" placeholder="Например, Пятёрочка">
+    </div>
+    <div class="field">
+      <label>Валюта чека</label>
+      <select id="receiptCurrencySelect">
+        <option value="֏">Драм (֏)</option>
+        <option value="₽">Рубль (₽)</option>
+        <option value="$">Доллар ($)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Кто причастен к этому чеку</label>
+      <div class="chip-row" id="receiptParticipantsChips"></div>
+    </div>
+    <div class="field">
+      <label>Кто платил</label>
+      <select id="payerSelect"></select>
+    </div>
+    <p class="error-box" id="payerError"></p>
+    <button class="primary-btn" id="toImportBtn">Сгенерировать случайный чек</button>
+    <button class="secondary-btn" id="toImportJsonBtn">Вставить чек (JSON)</button>
+    <button class="secondary-btn" id="toManualBtn">Создать свой чек</button>
+    <button class="link-btn" id="copyPromptFromPayerBtn">📋 Скопировать промпт распознавания</button>
+    <button class="link-btn" id="backFromPayerBtn">Назад</button>
+  </div>
+
+  <!-- Import screen -->
+  <div class="panel hidden" id="importScreen">
+    <div class="field">
+      <label>Вставь JSON, который вернула модель по фото чека</label>
+      <textarea id="importTextarea" placeholder='[{"name": "Чай Беглун 25 г", "qty": 1, "price": 570}]'></textarea>
+    </div>
+    <div class="error-box" id="importError"></div>
+    <button class="primary-btn" id="parseBtn">Разобрать</button>
+    <button class="link-btn" id="backFromImportBtn">Назад</button>
+  </div>
+
+  <!-- Preview screen -->
+  <div class="panel hidden" id="previewScreen">
+    <div class="preview-list" id="previewList"></div>
+    <div class="preview-total">Позиций: <b id="previewCount">0</b> · Сумма: <b id="previewSum">0</b></div>
+    <div class="add-item-box">
+      <p class="section-label" style="margin-bottom:10px;">Добавить свою позицию</p>
+      <div class="add-item-fields">
+        <div class="field"><input type="text" id="addItemName" placeholder="Название"></div>
+        <div class="field"><input type="text" id="addItemQty" class="qty-input" placeholder="Кол-во" value="1"></div>
+        <div class="field"><input type="text" id="addItemPrice" placeholder="Цена/ед."></div>
+      </div>
+      <p class="error-box" id="addItemError"></p>
+      <button class="secondary-btn" id="addItemBtn">+ Добавить в чек</button>
+    </div>
+    <button class="primary-btn" id="startFromPreviewBtn">Начать разбор</button>
+    <button class="link-btn" id="backFromPreviewBtn">Назад</button>
+  </div>
+
+  <!-- Reassign: choose payer before redoing assignment -->
+  <div class="panel hidden" id="reassignPayerScreen">
+    <p class="section-label">Магазин</p>
+    <p class="detail-shop-label" id="reassignShopLabel"></p>
+    <div class="field">
+      <label>Кто платил</label>
+      <select id="reassignPayerSelect"></select>
+    </div>
+    <button class="primary-btn" id="reassignContinueBtn">Продолжить к разбору →</button>
+    <button class="link-btn" id="cancelReassignFromPayerBtn">Отменить и вернуться к чеку</button>
+  </div>
+
+  <!-- Assignment screen -->
+  <div id="assignScreen" class="hidden">
+    <div class="assign-card" id="assignCard"></div>
+    <div class="nav-row">
+      <button class="back-item-btn" id="backItemBtn">←</button>
+      <button class="primary-btn" id="nextItemBtn" style="flex:1;">Далее</button>
+    </div>
+    <button class="link-btn hidden" id="cancelReassignBtn">Отменить и вернуться к чеку</button>
+  </div>
+
+  <!-- Receipt saved confirmation -->
+  <div class="panel hidden" id="savedScreen">
+    <p class="saved-title">Чек добавлен</p>
+    <p class="saved-subtitle" id="savedSummary"></p>
+    <button class="primary-btn" id="addAnotherBtn">Добавить ещё чек</button>
+    <button class="secondary-btn" id="toHomeBtn">К списку чеков</button>
+  </div>
+
+  <!-- Settle screen -->
+  <div class="panel hidden" id="settleScreen">
+    <p class="section-label">Баланс каждого (+ должны ему, − должен он)</p>
+    <div id="balanceList"></div>
+
+    <hr class="section-divider" id="settleDivider">
+    <p class="section-label">Минимальный набор переводов</p>
+    <div id="transfersList"></div>
+
+    <button class="link-btn" id="backFromSettleBtn">← К списку чеков</button>
+  </div>
+
+  <!-- Receipt detail screen -->
+  <div class="panel hidden" id="receiptDetailScreen">
+    <p class="section-label">Состав чека</p>
+    <div class="preview-list" id="detailItemsList"></div>
+    <div class="preview-total">Сумма чека: <b id="detailTotal">0</b></div>
+
+    <hr class="section-divider">
+    <p class="section-label">Кто что взял</p>
+    <div id="detailBreakdownList"></div>
+
+    <hr class="section-divider">
+    <p class="section-label">Кто сколько должен за этот чек</p>
+    <div id="detailOwedList"></div>
+
+    <button class="secondary-btn hidden" id="reassignBtn">Разобрать заново</button>
+    <button class="link-btn" id="backFromDetailBtn">← К списку чеков</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  const ITEM_POOL = [
+    { name: "Хлеб бородинский", count: 1, priceRange: [50, 80] },
+    { name: "Молоко 3.2%", count: 2, priceRange: [140, 190] },
+    { name: "Сигареты Parliament", count: 1, priceRange: [230, 280] },
+    { name: "Шоколад тёмный", count: 1, priceRange: [120, 180] },
+    { name: "Стиральный порошок", count: 1, priceRange: [300, 400] },
+    { name: "Пиво светлое", count: 4, priceRange: [280, 360] },
+    { name: "Яйца С1", count: 1, priceRange: [100, 140] },
+    { name: "Крем для рук", count: 1, priceRange: [180, 240] },
+    { name: "Куриное филе", count: 1, priceRange: [320, 420] },
+    { name: "Йогурт питьевой", count: 3, priceRange: [150, 210] },
+    { name: "Кофе молотый", count: 1, priceRange: [350, 480] },
+    { name: "Энергетик Red Bull", count: 2, priceRange: [190, 240] },
+    { name: "Туалетная бумага", count: 1, priceRange: [220, 300] },
+    { name: "Бананы", count: 1, priceRange: [90, 130] },
+    { name: "Сыр твёрдый", count: 1, priceRange: [220, 300] },
+    { name: "Жвачка Orbit", count: 3, priceRange: [60, 90] },
+    { name: "Макароны", count: 1, priceRange: [80, 120] },
+    { name: "Вино красное сухое", count: 1, priceRange: [450, 650] },
+  ];
+  const SHOPS = ["Пятёрочка", "Магнит", "Перекрёсток", "ВкусВилл", "Лента"];
+
+  function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+  function pickRandomItems() {
+    const shuffled = [...ITEM_POOL].sort(() => Math.random() - 0.5);
+    const n = rand(5, 8);
+    return shuffled.slice(0, n).map(base => {
+      const price = rand(base.priceRange[0], base.priceRange[1]);
+      return { name: base.name, qty: base.count, price: price, sum: base.count * price };
+    });
+  }
+  function escapeHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function todayLabel() {
+    const d = new Date();
+    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  }
+
+  const SYSTEM_PROMPT =
+"Ты — сервис распознавания чеков. Тебе передано фото чека.\n\n" +
+"Извлеки из него все позиции (товарные строки, не итоги/скидки/налоги).\n" +
+"Для каждой позиции определи:\n" +
+"- name: название товара, переведённое на русский язык (переводи всегда,\n" +
+"  даже если на чеке уже написано на русском — просто оставь как есть)\n" +
+"- qty: количество (число)\n" +
+"- price: цена за единицу товара (число, без валютного символа и пробелов)\n\n" +
+"Если название нечитаемо на фото — впиши наиболее вероятный вариант без\n" +
+"вопросительных знаков, скобок и пояснений.\n\n" +
+"Верни ТОЛЬКО валидный JSON-массив, без markdown-разметки, без пояснений\n" +
+"до или после, в формате:\n\n" +
+"[\n" +
+"  {\"name\": \"...\", \"qty\": ..., \"price\": ...}\n" +
+"]";
+
+  // ---------- Persistent state ----------
+  let participants = loadJSON('rs_participants', ["", "", "", ""]);
+  let receipts = loadJSON('rs_receipts', []); // {id, shop, date, payer, currency, total, owed:{name:amount}, breakdown:[...]}
+
+  function loadJSON(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      return JSON.parse(raw);
+    } catch (e) { return fallback; }
+  }
+  function persist() {
+    localStorage.setItem('rs_participants', JSON.stringify(participants));
+    localStorage.setItem('rs_receipts', JSON.stringify(receipts));
+  }
+
+  function fmt(n, curr) { return (Math.round(n * 100) / 100).toLocaleString('ru-RU') + ' ' + (curr || ''); }
+  function getCleanParticipants() { return participants.map(p => p.trim()).filter(Boolean); }
+
+  // ---------- Elements ----------
+  const screens = ['homeScreen','promptScreen','payerScreen','importScreen','previewScreen','assignScreen','savedScreen','settleScreen','receiptDetailScreen','reassignPayerScreen'];
+  function showOnly(ids) {
+    screens.forEach(id => document.getElementById(id).classList.toggle('hidden', !ids.includes(id)));
+    document.getElementById('progressTrack').classList.toggle('hidden', !ids.includes('assignScreen'));
+    document.getElementById('headerBackBtn').classList.add('hidden');
+  }
+
+  const title = document.getElementById('title');
+  const shopLine = document.getElementById('shopLine');
+  const participantsList = document.getElementById('participantsList');
+  const receiptsList = document.getElementById('receiptsList');
+  const receiptsCount = document.getElementById('receiptsCount');
+  const noReceiptsHint = document.getElementById('noReceiptsHint');
+  const homeError = document.getElementById('homeError');
+  const participantsError = document.getElementById('participantsError');
+
+  // ---------- Participants (roster) ----------
+  function renderParticipants() {
+    participantsList.innerHTML = '';
+    participants.forEach((name, i) => {
+      const row = document.createElement('div');
+      row.className = 'participant-row';
+      row.innerHTML =
+        '<input type="text" value="' + escapeHtml(name) + '" placeholder="Имя ' + (i + 1) + '" data-i="' + i + '">' +
+        (participants.length > 2 ? '<button class="rm-btn" data-i="' + i + '">✕</button>' : '');
+      participantsList.appendChild(row);
+    });
+    participantsList.querySelectorAll('input').forEach(inp => {
+      inp.addEventListener('input', () => { participants[Number(inp.dataset.i)] = inp.value; persist(); });
+    });
+    participantsList.querySelectorAll('.rm-btn').forEach(btn => {
+      btn.addEventListener('click', () => { participants.splice(Number(btn.dataset.i), 1); persist(); renderParticipants(); });
+    });
+  }
+  document.getElementById('addParticipantBtn').addEventListener('click', () => {
+    if (participants.length >= 10) return;
+    participants.push(""); persist(); renderParticipants();
+  });
+  renderParticipants();
+
+  // ---------- Home: receipts list ----------
+  let pendingDeleteId = null;
+
+  function renderReceiptsList() {
+    receiptsList.innerHTML = '';
+    receiptsCount.textContent = receipts.length;
+    noReceiptsHint.classList.toggle('hidden', receipts.length > 0);
+    receipts.forEach((r) => {
+      const card = document.createElement('div');
+
+      if (r.id === pendingDeleteId) {
+        card.className = 'receipt-card confirm-delete';
+        card.innerHTML =
+          '<span class="confirm-text">Удалить «' + escapeHtml(r.shop) + '»?</span>' +
+          '<button class="confirm-yes-btn" data-id="' + r.id + '">Да, удалить</button>' +
+          '<button class="confirm-no-btn" data-id="' + r.id + '">Отмена</button>';
+        receiptsList.appendChild(card);
+        return;
+      }
+
+      card.className = 'receipt-card';
+      card.style.cursor = 'pointer';
+      card.innerHTML =
+        '<div class="r-info">' +
+          '<div class="r-shop">' + escapeHtml(r.shop) + '</div>' +
+          '<div class="r-meta">' + escapeHtml(r.date) + ' · платил(а) ' + escapeHtml(r.payer) + '</div>' +
+        '</div>' +
+        '<div class="r-total">' + fmt(r.total, r.currency) + '</div>' +
+        '<button class="rm-btn" data-id="' + r.id + '">✕</button>';
+      card.querySelector('.r-info').addEventListener('click', () => openReceiptDetail(r.id));
+      card.querySelector('.r-total').addEventListener('click', () => openReceiptDetail(r.id));
+      receiptsList.appendChild(card);
+    });
+    receiptsList.querySelectorAll('.rm-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        pendingDeleteId = btn.dataset.id;
+        renderReceiptsList();
+      });
+    });
+    receiptsList.querySelectorAll('.confirm-yes-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        receipts = receipts.filter(r => r.id !== btn.dataset.id);
+        pendingDeleteId = null;
+        persist(); renderReceiptsList();
+      });
+    });
+    receiptsList.querySelectorAll('.confirm-no-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        pendingDeleteId = null;
+        renderReceiptsList();
+      });
+    });
+  }
+  renderReceiptsList();
+
+  function goHome() {
+    editingReceiptId = null;
+    title.textContent = 'Домохозяйство';
+    shopLine.textContent = 'Твои чеки';
+    renderReceiptsList();
+    showOnly(['homeScreen']);
+  }
+
+  let promptReturnTo = 'home';
+
+  function openPrompt(returnTo) {
+    promptReturnTo = returnTo;
+    document.getElementById('promptTextarea').value = SYSTEM_PROMPT;
+    title.textContent = 'Промпт';
+    shopLine.textContent = 'Для распознавания чека';
+    showOnly(['promptScreen']);
+  }
+
+  async function copyPrompt(textarea) {
+    try {
+      await navigator.clipboard.writeText(SYSTEM_PROMPT);
+      return true;
+    } catch {
+      textarea.select();
+      try { return document.execCommand('copy'); }
+      catch { return false; }
+    }
+  }
+
+  document.getElementById('promptLinkBtn').addEventListener('click', () => openPrompt('home'));
+  document.getElementById('copyPromptFromPayerBtn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const textarea = document.createElement('textarea');
+    textarea.value = SYSTEM_PROMPT;
+    textarea.readOnly = true;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    const copied = await copyPrompt(textarea);
+    textarea.remove();
+    if (!copied) {
+      openPrompt('payer');
+      document.getElementById('promptTextarea').select();
+      return;
+    }
+    const original = btn.textContent;
+    btn.textContent = '✓ Скопировано';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  });
+  document.getElementById('backFromPromptBtn').addEventListener('click', () => {
+    if (promptReturnTo === 'payer') {
+      title.textContent = 'Новый чек';
+      shopLine.textContent = 'Шаг 1 из 3';
+      showOnly(['payerScreen']);
+    } else {
+      goHome();
+    }
+  });
+  document.getElementById('copyPromptBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('copyPromptBtn');
+    const copied = await copyPrompt(document.getElementById('promptTextarea'));
+    const original = btn.textContent;
+    btn.textContent = copied ? 'Скопировано ✓' : 'Скопируй выделенный текст вручную';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  });
+
+  // ---------- New receipt: payer screen ----------
+  let draftShop = '';
+  let draftPayer = '';
+  let draftCurrency = '֏';
+  let draftParticipants = [];
+  let draftItems = null; // staged before assign
+
+  function renderReceiptParticipantsChips() {
+    const box = document.getElementById('receiptParticipantsChips');
+    box.innerHTML = participants.map(p =>
+      '<div class="chip include ' + (draftParticipants.includes(p) ? 'selected' : '') + '" data-rp="' + escapeHtml(p) + '">' + escapeHtml(p) + '</div>'
+    ).join('');
+    box.querySelectorAll('.chip').forEach(chip => chip.addEventListener('click', () => {
+      const p = chip.dataset.rp;
+      const idx = draftParticipants.indexOf(p);
+      if (idx >= 0) {
+        if (draftParticipants.length <= 1) return; // хотя бы один должен остаться
+        draftParticipants.splice(idx, 1);
+      } else {
+        draftParticipants.push(p);
+      }
+      renderReceiptParticipantsChips();
+      renderPayerSelect();
+    }));
+  }
+
+  function renderPayerSelect() {
+    const payerSelect = document.getElementById('payerSelect');
+    const prev = payerSelect.value;
+    payerSelect.innerHTML = draftParticipants.map(p => '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + '</option>').join('');
+    if (draftParticipants.includes(prev)) payerSelect.value = prev;
+  }
+
+  document.getElementById('addReceiptBtn').addEventListener('click', () => {
+    const names = getCleanParticipants();
+    if (names.length < 2) {
+      participantsError.textContent = 'Впиши имена хотя бы двух участников, прежде чем добавлять чек.';
+      participantsError.classList.add('show');
+      return;
+    }
+    participantsError.classList.remove('show');
+    participants = names; persist(); renderParticipants();
+
+    draftParticipants = [...participants];
+    renderReceiptParticipantsChips();
+    renderPayerSelect();
+    document.getElementById('shopNameInput').value = '';
+    document.getElementById('receiptCurrencySelect').value = '֏';
+    document.getElementById('payerError').classList.remove('show');
+    title.textContent = 'Новый чек';
+    shopLine.textContent = 'Шаг 1 из 3';
+    showOnly(['payerScreen']);
+  });
+  document.getElementById('backFromPayerBtn').addEventListener('click', goHome);
+
+  function confirmPayer() {
+    const shop = document.getElementById('shopNameInput').value.trim();
+    const payer = document.getElementById('payerSelect').value;
+    const curr = document.getElementById('receiptCurrencySelect').value;
+    if (draftParticipants.length === 0) {
+      document.getElementById('payerError').textContent = 'Отметь хотя бы одного участника этого чека.';
+      document.getElementById('payerError').classList.add('show');
+      return false;
+    }
+    if (!payer) {
+      document.getElementById('payerError').textContent = 'Выбери, кто платил.';
+      document.getElementById('payerError').classList.add('show');
+      return false;
+    }
+    draftShop = shop || 'Чек';
+    draftPayer = payer;
+    draftCurrency = curr || '֏';
+    return true;
+  }
+
+  document.getElementById('toImportBtn').addEventListener('click', () => {
+    if (!confirmPayer()) return;
+    if (!draftShop || draftShop === 'Чек') draftShop = SHOPS[rand(0, SHOPS.length - 1)];
+    draftItems = pickRandomItems();
+    renderPreview();
+    title.textContent = 'Проверь позиции';
+    shopLine.textContent = 'Шаг 2 из 3';
+    showOnly(['previewScreen']);
+  });
+  document.getElementById('toImportJsonBtn').addEventListener('click', () => {
+    if (!confirmPayer()) return;
+    document.getElementById('importTextarea').value = '';
+    document.getElementById('importError').classList.remove('show');
+    title.textContent = 'Вставь чек';
+    shopLine.textContent = 'Шаг 2 из 3';
+    showOnly(['importScreen']);
+  });
+  document.getElementById('toManualBtn').addEventListener('click', () => {
+    if (!confirmPayer()) return;
+    if (!draftShop || draftShop === 'Чек') draftShop = 'Мой чек';
+    draftItems = [];
+    renderPreview();
+    title.textContent = 'Добавь позиции';
+    shopLine.textContent = 'Шаг 2 из 3';
+    showOnly(['previewScreen']);
+  });
+  document.getElementById('backFromImportBtn').addEventListener('click', () => {
+    title.textContent = 'Новый чек'; shopLine.textContent = 'Шаг 1 из 3';
+    showOnly(['payerScreen']);
+  });
+
+  document.getElementById('parseBtn').addEventListener('click', () => {
+    const raw = document.getElementById('importTextarea').value.trim();
+    const importError = document.getElementById('importError');
+    importError.classList.remove('show');
+    if (!raw) { importError.textContent = 'Вставь JSON с позициями чека.'; importError.classList.add('show'); return; }
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch (e) { importError.textContent = 'Не получилось прочитать JSON. Проверь, что скопировал ответ модели полностью.'; importError.classList.add('show'); return; }
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      importError.textContent = 'Ожидается непустой массив вида [{"name": "...", "qty": 1, "price": 100}].';
+      importError.classList.add('show'); return;
+    }
+    const items = [];
+    for (const row of parsed) {
+      const name = (row && typeof row.name === 'string') ? row.name.trim() : '';
+      const qty = Number(row && row.qty);
+      const price = Number(row && row.price);
+      if (!name || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(price) || price < 0) {
+        importError.textContent = 'В одной из позиций некорректные поля: нужны непустое name, число qty > 0 и число price ≥ 0.';
+        importError.classList.add('show'); return;
+      }
+      items.push({ name, qty, price, sum: qty * price });
+    }
+    draftItems = items;
+    if (!draftShop || draftShop === 'Чек') draftShop = 'Твой чек';
+    renderPreview();
+    title.textContent = 'Проверь позиции';
+    shopLine.textContent = 'Шаг 2 из 3';
+    showOnly(['previewScreen']);
+  });
+
+  function qtyLabel(qty) { return Number.isInteger(qty) ? (qty + ' шт') : (qty + ' (вес/объём)'); }
+
+  let previewEditingIndex = null;
+
+  function renderPreview() {
+    const previewList = document.getElementById('previewList');
+    previewList.innerHTML = '';
+    let total = 0;
+    draftItems.forEach((item, i) => {
+      total += item.sum;
+      const row = document.createElement('div');
+      row.className = 'preview-row';
+      if (previewEditingIndex === i) {
+        row.innerHTML =
+          '<div class="info"><div class="p-name">' + escapeHtml(item.name) + '</div>' +
+          '<div class="p-meta">' + qtyLabel(item.qty) + ' × <input type="text" class="edit-price-input" id="editPriceInput" value="' + item.price + '"></div></div>' +
+          '<button class="edit-save-btn" data-i="' + i + '">✓</button>' +
+          '<button class="del-btn" data-i="' + i + '">✕</button>';
+      } else {
+        row.innerHTML =
+          '<div class="info"><div class="p-name">' + escapeHtml(item.name) + '</div>' +
+          '<div class="p-meta">' + qtyLabel(item.qty) + ' × ' + fmt(item.price, draftCurrency) + '</div></div>' +
+          '<div class="p-sum">' + fmt(item.sum, draftCurrency) + '</div>' +
+          '<button class="edit-btn" data-i="' + i + '">✎</button>' +
+          '<button class="del-btn" data-i="' + i + '">✕</button>';
+      }
+      previewList.appendChild(row);
+    });
+    document.getElementById('previewCount').textContent = draftItems.length;
+    document.getElementById('previewSum').textContent = fmt(total, draftCurrency);
+    previewList.querySelectorAll('.del-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        draftItems.splice(Number(btn.dataset.i), 1);
+        previewEditingIndex = null;
+        renderPreview();
+      });
+    });
+    previewList.querySelectorAll('.edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        previewEditingIndex = Number(btn.dataset.i);
+        renderPreview();
+        const input = document.getElementById('editPriceInput');
+        if (input) { input.focus(); input.select(); }
+      });
+    });
+    function commitPriceEdit(i) {
+      const input = document.getElementById('editPriceInput');
+      const newPrice = Number(input.value.replace(',', '.'));
+      if (Number.isFinite(newPrice) && newPrice >= 0) {
+        draftItems[i].price = newPrice;
+        draftItems[i].sum = draftItems[i].qty * newPrice;
+      }
+      previewEditingIndex = null;
+      renderPreview();
+    }
+    previewList.querySelectorAll('.edit-save-btn').forEach(btn => {
+      btn.addEventListener('click', () => commitPriceEdit(Number(btn.dataset.i)));
+    });
+    const editInput = document.getElementById('editPriceInput');
+    if (editInput) {
+      editInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') commitPriceEdit(previewEditingIndex);
+        if (e.key === 'Escape') { previewEditingIndex = null; renderPreview(); }
+      });
+    }
+  }
+
+  document.getElementById('addItemBtn').addEventListener('click', () => {
+    const nameInput = document.getElementById('addItemName');
+    const qtyInput = document.getElementById('addItemQty');
+    const priceInput = document.getElementById('addItemPrice');
+    const addItemError = document.getElementById('addItemError');
+    addItemError.classList.remove('show');
+    const name = nameInput.value.trim();
+    const qty = Number(qtyInput.value.replace(',', '.'));
+    const price = Number(priceInput.value.replace(',', '.'));
+    if (!name) { addItemError.textContent = 'Впиши название позиции.'; addItemError.classList.add('show'); return; }
+    if (!Number.isFinite(qty) || qty <= 0) { addItemError.textContent = 'Количество должно быть числом больше нуля.'; addItemError.classList.add('show'); return; }
+    if (!Number.isFinite(price) || price < 0) { addItemError.textContent = 'Цена должна быть числом.'; addItemError.classList.add('show'); return; }
+    draftItems.push({ name, qty, price, sum: qty * price });
+    nameInput.value = ''; qtyInput.value = '1'; priceInput.value = '';
+    renderPreview(); nameInput.focus();
+  });
+  document.getElementById('backFromPreviewBtn').addEventListener('click', () => {
+    title.textContent = 'Новый чек'; shopLine.textContent = 'Шаг 1 из 3';
+    showOnly(['payerScreen']);
+  });
+
+  // ---------- Assignment ----------
+  let RECEIPT = [];
+  let index = 0;
+  let assignments = [];
+  let editingReceiptId = null;
+  const assignCard = document.getElementById('assignCard');
+  const nextItemBtn = document.getElementById('nextItemBtn');
+  const backItemBtn = document.getElementById('backItemBtn');
+  const progressFill = document.getElementById('progressFill');
+
+  document.getElementById('startFromPreviewBtn').addEventListener('click', () => {
+    if (!draftItems || draftItems.length === 0) {
+      document.getElementById('addItemError').textContent = 'В чеке нет ни одной позиции — добавь хотя бы одну.';
+      document.getElementById('addItemError').classList.add('show');
+      return;
+    }
+    RECEIPT = draftItems.map(it => ({ name: it.name, qty: it.qty, price: it.price, sum: it.sum }));
+    index = 0;
+    assignments = RECEIPT.map(() => ({ claims: {}, owners: [], remainderWith: [] }));
+    editingReceiptId = null;
+    document.getElementById('cancelReassignBtn').classList.add('hidden');
+    title.textContent = 'Кто что брал?';
+    shopLine.textContent = 'Шаг 3 из 3 · ' + draftShop;
+    showOnly(['assignScreen']);
+    renderAssignCard();
+  });
+
+  function totalUnits(item) { return Number.isInteger(item.qty) ? item.qty : 1; }
+
+  function renderAssignCard() {
+    progressFill.style.width = Math.round((index / RECEIPT.length) * 100) + '%';
+    backItemBtn.disabled = false;
+    if (index >= RECEIPT.length) { finishReceipt(); return; }
+
+    const item = RECEIPT[index];
+    const units = totalUnits(item);
+    const state = assignments[index];
+    let bodyHtml = '';
+
+    if (units > 1) {
+      const claimedSum = Object.values(state.claims).reduce((s, v) => s + v, 0);
+      const remaining = units - claimedSum;
+      bodyHtml = '<div class="stepper-list">' + draftParticipants.map(p => {
+        const n = state.claims[p] || 0;
+        return '<div class="stepper-row"><span class="pname">' + escapeHtml(p) + '</span>' +
+          '<div class="stepper-ctrl">' +
+            '<button class="dec" data-p="' + escapeHtml(p) + '" ' + (n === 0 ? 'disabled' : '') + '>−</button>' +
+            '<span class="n">' + n + '</span>' +
+            '<button class="inc" data-p="' + escapeHtml(p) + '" ' + (remaining === 0 ? 'disabled' : '') + '>+</button>' +
+          '</div></div>';
+      }).join('') + '</div>';
+      if (remaining > 0) {
+        const remainderWith = state.remainderWith;
+        bodyHtml += '<p class="section-label shared-label">Остаток (' + remaining + ' из ' + units + ') делят между</p>' +
+          '<div class="chip-row">' +
+            '<div class="chip common ' + (remainderWith.length === 0 ? 'selected' : '') + '" data-remowner="">Все</div>' +
+            draftParticipants.map(p => '<div class="chip include ' + (remainderWith.includes(p) ? 'selected' : '') + '" data-remowner="' + escapeHtml(p) + '">' + escapeHtml(p) + '</div>').join('') +
+          '</div>';
+      }
+    } else {
+      const owners = state.owners;
+      bodyHtml = '<div class="chip-row">' +
+        '<div class="chip common ' + (owners.length === 0 ? 'selected' : '') + '" data-owner="">Общее</div>' +
+        draftParticipants.map(p => '<div class="chip include ' + (owners.includes(p) ? 'selected' : '') + '" data-owner="' + escapeHtml(p) + '">' + escapeHtml(p) + '</div>').join('') +
+      '</div>' +
+      (owners.length > 0 ? '<p class="hint-line">Делят между собой: ' + owners.map(escapeHtml).join(', ') + '</p>' : '');
+    }
+
+    assignCard.innerHTML =
+      '<div class="qty">' + qtyLabel(item.qty) + ' · ' + fmt(item.price, draftCurrency) + ' за ед.</div>' +
+      '<div class="name">' + escapeHtml(item.name) + '</div>' +
+      '<div class="price">' + fmt(item.sum, draftCurrency) + '</div>' + bodyHtml;
+
+    if (units > 1) {
+      assignCard.querySelectorAll('.inc').forEach(btn => btn.addEventListener('click', () => {
+        const p = btn.dataset.p; const c = state.claims;
+        const used = Object.values(c).reduce((s, v) => s + v, 0);
+        if (used >= units) return;
+        c[p] = (c[p] || 0) + 1; renderAssignCard();
+      }));
+      assignCard.querySelectorAll('.dec').forEach(btn => btn.addEventListener('click', () => {
+        const p = btn.dataset.p; const c = state.claims;
+        if ((c[p] || 0) <= 0) return;
+        c[p] = c[p] - 1; if (c[p] === 0) delete c[p];
+        renderAssignCard();
+      }));
+      assignCard.querySelectorAll('[data-remowner]').forEach(chip => chip.addEventListener('click', () => {
+        const owner = chip.dataset.remowner;
+        if (owner === '') { state.remainderWith = []; }
+        else {
+          const i3 = state.remainderWith.indexOf(owner);
+          if (i3 >= 0) state.remainderWith.splice(i3, 1); else state.remainderWith.push(owner);
+        }
+        renderAssignCard();
+      }));
+    } else {
+      assignCard.querySelectorAll('.chip').forEach(chip => chip.addEventListener('click', () => {
+        const owner = chip.dataset.owner;
+        if (owner === '') { state.owners = []; }
+        else {
+          const i2 = state.owners.indexOf(owner);
+          if (i2 >= 0) state.owners.splice(i2, 1); else state.owners.push(owner);
+        }
+        renderAssignCard();
+      }));
+    }
+  }
+
+  nextItemBtn.addEventListener('click', () => { index += 1; renderAssignCard(); });
+  backItemBtn.addEventListener('click', () => {
+    if (index > 0) {
+      index -= 1;
+      showOnly(['assignScreen']);
+      renderAssignCard();
+      return;
+    }
+    // first item — go back to the previous step
+    if (editingReceiptId) {
+      showReassignPayerStep();
+    } else {
+      title.textContent = 'Проверь позиции';
+      shopLine.textContent = 'Шаг 2 из 3';
+      renderPreview();
+      showOnly(['previewScreen']);
+    }
+  });
+
+  function finishReceipt() {
+    const personalTotals = {}; const sharedTotals = {};
+    draftParticipants.forEach(p => { personalTotals[p] = 0; sharedTotals[p] = 0; });
+    let total = 0;
+    const breakdown = [];
+
+    RECEIPT.forEach((item, i) => {
+      const units = totalUnits(item);
+      const unitPrice = item.sum / units;
+      const state = assignments[i];
+      total += item.sum;
+
+      if (units > 1) {
+        let claimedUnits = 0;
+        Object.keys(state.claims).forEach(p => {
+          const n = state.claims[p];
+          if (n > 0) {
+            personalTotals[p] += n * unitPrice;
+            claimedUnits += n;
+            breakdown.push({ who: p, name: item.name + ' ×' + n, sum: n * unitPrice });
+          }
+        });
+        const leftover = units - claimedUnits;
+        if (leftover > 0) {
+          const leftoverSum = leftover * unitPrice;
+          const sharers = state.remainderWith.length ? state.remainderWith : draftParticipants;
+          const perSharer = leftoverSum / sharers.length;
+          sharers.forEach(p => { sharedTotals[p] = (sharedTotals[p] || 0) + perSharer; });
+          const whoLabel = state.remainderWith.length === 0 ? 'Все' : sharers.join(', ');
+          breakdown.push({ who: whoLabel, name: item.name + ' ×' + leftover, sum: leftoverSum });
+        }
+      } else {
+        const owners = state.owners.length ? state.owners : draftParticipants;
+        const perOwner = item.sum / owners.length;
+        owners.forEach(p => { sharedTotals[p] = (sharedTotals[p] || 0) + perOwner; });
+        const whoLabel = state.owners.length === 0 ? 'Общее' : owners.join(', ');
+        breakdown.push({ who: whoLabel, name: item.name, sum: item.sum });
+      }
+    });
+
+    const owed = {};
+    draftParticipants.forEach(p => { owed[p] = (personalTotals[p] || 0) + (sharedTotals[p] || 0); });
+
+    if (editingReceiptId) {
+      const existing = receipts.find(r => r.id === editingReceiptId);
+      existing.owed = owed;
+      existing.items = RECEIPT;
+      existing.breakdown = breakdown;
+      existing.participants = draftParticipants;
+      existing.total = total;
+      existing.payer = draftPayer;
+      persist();
+      const finishedId = editingReceiptId;
+      editingReceiptId = null;
+      openReceiptDetail(finishedId);
+      return;
+    }
+
+    const receipt = {
+      id: 'r_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+      shop: draftShop,
+      date: todayLabel(),
+      payer: draftPayer,
+      currency: draftCurrency,
+      total: total,
+      owed: owed,
+      items: RECEIPT,
+      breakdown: breakdown,
+      participants: draftParticipants
+    };
+    receipts.push(receipt);
+    persist();
+
+    document.getElementById('savedSummary').textContent =
+      draftShop + ' · ' + fmt(total, draftCurrency) + ' · заплатил(а) ' + draftPayer;
+    title.textContent = 'Готово';
+    shopLine.textContent = '';
+    showOnly(['savedScreen']);
+  }
+
+  document.getElementById('addAnotherBtn').addEventListener('click', () => {
+    document.getElementById('addReceiptBtn').click();
+  });
+  document.getElementById('toHomeBtn').addEventListener('click', goHome);
+
+  function openReceiptDetail(id) {
+    const r = receipts.find(x => x.id === id);
+    if (!r) return;
+
+    if (!r.items || !r.breakdown) {
+      const curr = r.currency || '֏';
+      document.getElementById('reassignBtn').classList.add('hidden');
+      document.getElementById('detailItemsList').innerHTML =
+        '<p class="empty-hint">Этот чек добавлен до обновления и не хранит детали позиций — итоги по нему всё ещё учтены в балансе ниже, но состав посмотреть нельзя. Удали его и добавь заново, если нужны детали.</p>';
+      document.getElementById('detailTotal').textContent = fmt(r.total, curr);
+      document.getElementById('detailBreakdownList').innerHTML = '';
+      document.getElementById('detailOwedList').innerHTML = Object.keys(r.owed || {}).map(p =>
+        '<div class="balance-row"><span class="b-name">' + escapeHtml(p) + (p === r.payer ? ' (платил(а))' : '') + '</span>' +
+        '<span class="b-value pos">' + fmt(r.owed[p], curr) + '</span></div>'
+      ).join('');
+      title.textContent = r.shop;
+      shopLine.textContent = r.date + ' · платил(а) ' + r.payer;
+      showOnly(['receiptDetailScreen']);
+      return;
+    }
+
+    document.getElementById('detailItemsList').innerHTML = r.items.map(item =>
+      '<div class="preview-row">' +
+        '<div class="info"><div class="p-name">' + escapeHtml(item.name) + '</div>' +
+        '<div class="p-meta">' + qtyLabel(item.qty) + ' × ' + fmt(item.price, r.currency) + '</div></div>' +
+        '<div class="p-sum">' + fmt(item.sum, r.currency) + '</div>' +
+      '</div>'
+    ).join('');
+    document.getElementById('detailTotal').textContent = fmt(r.total, r.currency);
+
+    document.getElementById('detailBreakdownList').innerHTML = r.breakdown.map(b =>
+      '<div class="balance-row"><span class="b-name">' + escapeHtml(b.who) + ' · ' + escapeHtml(b.name) + '</span>' +
+      '<span class="b-value zero">' + fmt(b.sum, r.currency) + '</span></div>'
+    ).join('');
+
+    document.getElementById('detailOwedList').innerHTML = Object.keys(r.owed).map(p =>
+      '<div class="balance-row"><span class="b-name">' + escapeHtml(p) + (p === r.payer ? ' (платил(а))' : '') + '</span>' +
+      '<span class="b-value pos">' + fmt(r.owed[p], r.currency) + '</span></div>'
+    ).join('');
+
+    title.textContent = r.shop;
+    shopLine.textContent = r.date + ' · платил(а) ' + r.payer;
+    showOnly(['receiptDetailScreen']);
+
+    const reassignBtn = document.getElementById('reassignBtn');
+    reassignBtn.classList.remove('hidden');
+    reassignBtn.onclick = () => startReassign(r.id);
+  }
+
+  function startReassign(id) {
+    const r = receipts.find(x => x.id === id);
+    if (!r || !r.items) return;
+    draftShop = r.shop;
+    draftPayer = r.payer;
+    draftCurrency = r.currency || '֏';
+    draftParticipants = r.participants && r.participants.length ? [...r.participants] : Object.keys(r.owed);
+    RECEIPT = r.items.map(it => ({ name: it.name, qty: it.qty, price: it.price, sum: it.sum }));
+    editingReceiptId = id;
+    index = 0;
+    assignments = RECEIPT.map(() => ({ claims: {}, owners: [], remainderWith: [] }));
+
+    showReassignPayerStep();
+  }
+
+  function showReassignPayerStep() {
+    document.getElementById('reassignShopLabel').textContent = draftShop + ' · ' + draftCurrency;
+    const payerSelect = document.getElementById('reassignPayerSelect');
+    payerSelect.innerHTML = draftParticipants.map(p => '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + '</option>').join('');
+    payerSelect.value = draftParticipants.includes(draftPayer) ? draftPayer : draftParticipants[0];
+
+    title.textContent = 'Пересбор чека';
+    shopLine.textContent = draftShop;
+    showOnly(['reassignPayerScreen']);
+  }
+
+  document.getElementById('reassignContinueBtn').addEventListener('click', () => {
+    draftPayer = document.getElementById('reassignPayerSelect').value;
+    document.getElementById('cancelReassignBtn').classList.remove('hidden');
+    title.textContent = 'Кто что брал?';
+    shopLine.textContent = 'Пересбор · ' + draftShop;
+    showOnly(['assignScreen']);
+    renderAssignCard();
+  });
+
+  function cancelReassign() {
+    const idToReturn = editingReceiptId;
+    editingReceiptId = null;
+    if (idToReturn) openReceiptDetail(idToReturn);
+    else goHome();
+  }
+  document.getElementById('cancelReassignFromPayerBtn').addEventListener('click', cancelReassign);
+  document.getElementById('cancelReassignBtn').addEventListener('click', cancelReassign);
+  document.getElementById('backFromDetailBtn').addEventListener('click', goHome);
+
+  // ---------- Settle screen ----------
+  document.getElementById('settleBtn').addEventListener('click', () => {
+    if (receipts.length === 0) {
+      homeError.textContent = 'Добавь хотя бы один чек, прежде чем сводить баланс.';
+      homeError.classList.add('show');
+      return;
+    }
+    renderSettle();
+    title.textContent = 'Взаимозачёт';
+    shopLine.textContent = receipts.length + ' чек(ов)';
+    showOnly(['settleScreen']);
+  });
+  document.getElementById('backFromSettleBtn').addEventListener('click', goHome);
+
+  function renderSettle() {
+    // group receipts by currency — balances across different currencies can't be summed
+    const byCurrency = {};
+    receipts.forEach(r => {
+      const curr = r.currency || '֏';
+      if (!byCurrency[curr]) byCurrency[curr] = [];
+      byCurrency[curr].push(r);
+    });
+    const currencies = Object.keys(byCurrency);
+
+    const balanceList = document.getElementById('balanceList');
+    const transfersList = document.getElementById('transfersList');
+    balanceList.innerHTML = '';
+    transfersList.innerHTML = '';
+
+    currencies.forEach(curr => {
+      const receiptsInCurr = byCurrency[curr];
+      const names = new Set(getCleanParticipants());
+      receiptsInCurr.forEach(r => { names.add(r.payer); Object.keys(r.owed).forEach(n => names.add(n)); });
+      const allNames = Array.from(names);
+
+      const balance = {};
+      allNames.forEach(n => balance[n] = 0);
+      receiptsInCurr.forEach(r => {
+        balance[r.payer] = (balance[r.payer] || 0) + r.total;
+        Object.keys(r.owed).forEach(n => { balance[n] = (balance[n] || 0) - r.owed[n]; });
+      });
+
+      balanceList.innerHTML += '<p class="section-label currency-group">Валюта: ' + escapeHtml(curr) + '</p>' +
+        allNames.map(n => {
+          const v = balance[n];
+          const cls = v > 0.5 ? 'pos' : (v < -0.5 ? 'neg' : 'zero');
+          const sign = v > 0.5 ? '+' : '';
+          const note = v > 0.5 ? 'ему должны' : (v < -0.5 ? 'должен' : 'в расчёте');
+          return '<div class="balance-row"><span class="b-name">' + escapeHtml(n) + ' <span class="b-note">(' + note + ')</span></span>' +
+            '<span class="b-value ' + cls + '">' + sign + fmt(v, curr) + '</span></div>';
+        }).join('');
+
+      const transfers = computeSettlement(balance);
+      transfersList.innerHTML += '<p class="section-label currency-group">Валюта: ' + escapeHtml(curr) + '</p>' +
+        (transfers.length === 0
+          ? '<div class="all-settled">Все в расчёте — переводов не требуется 🎉</div>'
+          : transfers.map(t =>
+              '<div class="transfer-row">' +
+                '<span class="t-names">' + escapeHtml(t.from) + ' <span class="t-arrow">→</span> ' + escapeHtml(t.to) + '</span>' +
+                '<span class="t-amount">' + fmt(t.amount, curr) + '</span>' +
+              '</div>'
+            ).join(''));
+    });
+  }
+
+  function computeSettlement(balanceMap) {
+    const creditors = Object.entries(balanceMap)
+      .filter(([, v]) => v > 0.5)
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount);
+    const debtors = Object.entries(balanceMap)
+      .filter(([, v]) => v < -0.5)
+      .map(([name, amount]) => ({ name, amount: -amount }))
+      .sort((a, b) => b.amount - a.amount);
+
+    const transfers = [];
+    let i = 0, j = 0;
+    while (i < debtors.length && j < creditors.length) {
+      const pay = Math.min(debtors[i].amount, creditors[j].amount);
+      if (pay > 0.5) transfers.push({ from: debtors[i].name, to: creditors[j].name, amount: pay });
+      debtors[i].amount -= pay;
+      creditors[j].amount -= pay;
+      if (debtors[i].amount <= 0.5) i++;
+      if (creditors[j].amount <= 0.5) j++;
+    }
+    return transfers;
+  }
+
+  goHome();
+  window.Telegram?.WebApp?.ready();
+})();
+</script>
+
+</body>
+</html>
