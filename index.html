@@ -2,10 +2,13 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
+<!-- После изменения встроенного JS обнови SHA-256 для его текста в UTF-8 с переводами строк LF. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-TK5Hzw5R2Ra6JCpUXayWPLiMl8Fh9luJBIweFt0bdlk=' https://telegram.org/js/telegram-web-app.js; style-src 'unsafe-inline'; connect-src https://receipt-splitter-api.rs-dbelousovww.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="receipt-api" content="https://receipt-splitter-api.rs-dbelousovww.workers.dev">
 <title>Разбор чеков и взаимозачёт</title>
-<script src="https://telegram.org/js/telegram-web-app.js?65"></script>
+<script src="https://telegram.org/js/telegram-web-app.js?65" integrity="sha384-Vfd/BDDodKSHihoWEYUp7viIzknmkv8bWNw7o3LJsq4ziOpCagWvXEZLJH5cAgh0" crossorigin="anonymous"></script>
 <style>
   :root {
     --bg: #F6F5F1; --surface: #FFFFFF; --ink: #1C1B19; --ink-soft: #6B6862;
@@ -69,6 +72,7 @@
   .secondary-btn:hover { border-color: var(--accent); }
   .link-btn { display: block; width: 100%; text-align: center; background: none; border: none; color: var(--ink-soft); font-size: 13px; text-decoration: underline; cursor: pointer; padding: 10px 0; }
   .link-btn:hover { color: var(--ink); }
+  .community-delete-btn { color: var(--danger); }
 
   .primary-btn:focus-visible, .secondary-btn:focus-visible, .link-btn:focus-visible,
   .chip:focus-visible, .stepper-ctrl button:focus-visible, .back-item-btn:focus-visible,
@@ -196,6 +200,7 @@
 
   <!-- HOME SCREEN -->
   <div id="homeScreen">
+    <p class="error-box" id="localStorageError" role="alert"></p>
     <div class="panel hidden" id="communityPanel">
       <fieldset class="community-controls" id="communityControls">
         <div class="field">
@@ -203,14 +208,10 @@
           <select id="communitySelect"><option value="">Личные чеки на устройстве</option></select>
         </div>
         <details id="communityActions">
-          <summary>Создать общину или вступить</summary>
+          <summary>Создать общину</summary>
           <form id="createCommunityForm">
             <input type="text" id="communityName" aria-label="Название общины" placeholder="Название общины" maxlength="80" required>
             <button class="secondary-btn">Создать общину</button>
-          </form>
-          <form id="joinCommunityForm">
-            <input type="text" id="communityInviteCode" aria-label="Приглашение" placeholder="Ссылка или код приглашения" maxlength="200" required>
-            <button class="secondary-btn">Вступить в общину</button>
           </form>
         </details>
         <details class="hidden" id="inviteActions">
@@ -220,12 +221,22 @@
             <button class="secondary-btn">Создать приглашение</button>
           </form>
           <div class="hidden" id="inviteResult">
-            <label for="inviteText">Отправь участнику ссылку и код приглашения</label>
-            <textarea id="inviteText" readonly></textarea>
+            <label for="inviteText">Ссылка-приглашение</label>
+            <input type="text" id="inviteText" readonly>
+            <button type="button" class="secondary-btn" id="copyInviteBtn">Скопировать ссылку</button>
           </div>
         </details>
         <button type="button" class="link-btn" id="refreshCommunityBtn">Обновить данные</button>
+        <div class="hidden" id="communityDeleteActions">
+          <button type="button" class="link-btn community-delete-btn" id="showCommunityDeleteBtn">Удалить общину</button>
+          <div class="hidden" id="communityDeleteConfirm">
+            <p class="confirm-text" id="communityDeleteWarning"></p>
+            <button type="button" class="confirm-yes-btn" id="deleteCommunityBtn">Да, удалить</button>
+            <button type="button" class="confirm-no-btn" id="cancelCommunityDeleteBtn">Отмена</button>
+          </div>
+        </div>
       </fieldset>
+      <p class="empty-hint hidden" id="communityStatus" role="status"></p>
       <p class="error-box" id="communityError" role="alert"></p>
     </div>
     <div class="panel">
@@ -301,6 +312,7 @@
   <!-- Preview screen -->
   <div class="panel hidden" id="previewScreen">
     <div class="preview-list" id="previewList"></div>
+    <p class="error-box" id="editPriceError" role="alert"></p>
     <div class="preview-total">Позиций: <b id="previewCount">0</b> · Сумма: <b id="previewSum">0</b></div>
     <div class="add-item-box">
       <p class="section-label" style="margin-bottom:10px;">Добавить свою позицию</p>
@@ -354,6 +366,7 @@
 
     <hr class="section-divider" id="settleDivider">
     <p class="section-label">Минимальный набор переводов</p>
+    <p class="empty-hint">Остатки до 0,50 включительно не участвуют в переводах.</p>
     <div id="transfersList"></div>
 
     <button class="link-btn" id="backFromSettleBtn">← К списку чеков</button>
@@ -371,6 +384,7 @@
 
     <hr class="section-divider">
     <p class="section-label">Кто сколько должен за этот чек</p>
+    <p class="empty-hint">Доли показаны с округлением до сотых.</p>
     <div id="detailOwedList"></div>
 
     <button class="secondary-btn hidden" id="reassignBtn">Разобрать заново</button>
@@ -437,8 +451,11 @@
 "]";
 
   // ---------- Persistent state ----------
-  let participants = loadJSON('rs_participants', ["", "", "", ""]);
-  let receipts = loadJSON('rs_receipts', []); // {id, shop, date, payer, currency, total, owed:{name:amount}, breakdown:[...]}
+  const MAX_RECEIPT_AMOUNT = 1e12;
+  const currencies = new Set(['֏', '₽', '$']);
+  const damagedStorage = new Set();
+  let participants = readLocalList('rs_participants', ['', '', '', ''], entry => typeof entry === 'string');
+  let receipts = readLocalList('rs_receipts', [], validSavedReceipt);
   let community = null;
   let communityBusy = false;
   let refreshingCommunity = false;
@@ -454,13 +471,49 @@
       return JSON.parse(raw);
     } catch (e) { return fallback; }
   }
+  function readLocalList(key, fallback, accepts) {
+    damagedStorage.delete(key);
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw === null) return fallback;
+      const data = JSON.parse(raw);
+      if (Array.isArray(data)) {
+        const readable = data.filter(accepts);
+        if (readable.length !== data.length) damagedStorage.add(key);
+        return readable;
+      }
+    } catch {
+      // Preserve the original value when it cannot be read.
+    }
+    damagedStorage.add(key);
+    return fallback;
+  }
+
+  function validAmount(value) { return Number.isFinite(value) && value >= 0; }
+
+  function validSavedReceipt(receipt) {
+    return receipt && typeof receipt.id === 'string' && receipt.id.length > 0 &&
+      typeof receipt.shop === 'string' && typeof receipt.date === 'string' && typeof receipt.payer === 'string' &&
+      (receipt.currency == null || receipt.currency === '' || currencies.has(receipt.currency)) && validAmount(receipt.total) &&
+      receipt.owed && typeof receipt.owed === 'object' && !Array.isArray(receipt.owed) &&
+      Object.values(receipt.owed).every(validAmount) &&
+      (receipt.participants == null || (Array.isArray(receipt.participants) &&
+        receipt.participants.every(name => typeof name === 'string' && Boolean(name.trim())))) &&
+      (receipt.items == null || (Array.isArray(receipt.items) && receipt.items.length > 0 && receipt.items.every(item =>
+        item && typeof item.name === 'string' && validAmount(item.qty) && item.qty > 0 &&
+        validAmount(item.price) && validAmount(item.sum)))) &&
+      (receipt.breakdown == null || (Array.isArray(receipt.breakdown) && receipt.breakdown.every(row =>
+        row && typeof row.who === 'string' && typeof row.name === 'string' && validAmount(row.sum))));
+  }
+
   function persist() {
     if (community) return;
-    localStorage.setItem('rs_participants', JSON.stringify(participants));
-    localStorage.setItem('rs_receipts', JSON.stringify(receipts));
+    if (!damagedStorage.has('rs_participants')) localStorage.setItem('rs_participants', JSON.stringify(participants));
+    if (!damagedStorage.has('rs_receipts')) localStorage.setItem('rs_receipts', JSON.stringify(receipts));
   }
 
   function fmt(n, curr) { return (Math.round(n * 100) / 100).toLocaleString('ru-RU') + ' ' + (curr || ''); }
+  function fmtHtml(n, curr) { return escapeHtml(fmt(n, curr)); }
   function getCleanParticipants() { return participants.map(p => p.trim()).filter(Boolean); }
 
   // ---------- Elements ----------
@@ -481,6 +534,21 @@
   const participantsError = document.getElementById('participantsError');
   const communitySelect = document.getElementById('communitySelect');
   const communityError = document.getElementById('communityError');
+  const communityStatus = document.getElementById('communityStatus');
+  const inviteText = document.getElementById('inviteText');
+  const copyInviteBtn = document.getElementById('copyInviteBtn');
+  const showCommunityDeleteBtn = document.getElementById('showCommunityDeleteBtn');
+  const communityDeleteConfirm = document.getElementById('communityDeleteConfirm');
+
+  function updateHomeActions() {
+    const rosterDamaged = !community && damagedStorage.has('rs_participants');
+    const receiptsDamaged = !community && damagedStorage.has('rs_receipts');
+    const warning = document.getElementById('localStorageError');
+    warning.textContent = 'Часть локальных данных не удалось прочитать. Исходные записи сохранены. Изменения, которые могут затронуть их, недоступны.';
+    warning.classList.toggle('show', rosterDamaged || receiptsDamaged);
+    document.getElementById('addReceiptBtn').disabled = communityBusy || rosterDamaged || receiptsDamaged;
+    document.getElementById('settleBtn').disabled = communityBusy || receiptsDamaged;
+  }
 
   async function api(path, method = 'GET', body) {
     let response;
@@ -496,7 +564,11 @@
     }
     if (response.status === 401) throw new Error('Закрой мини-приложение и открой его снова из Telegram.');
     const result = await response.json().catch(() => null);
-    if (!response.ok || !result) throw new Error(result?.error || 'Сервер временно недоступен.');
+    if (!response.ok || !result) {
+      const error = new Error(result?.error || 'Сервер временно недоступен.');
+      error.status = response.status;
+      throw error;
+    }
     return result;
   }
 
@@ -505,9 +577,9 @@
     communityBusy = true;
     communityEpoch++;
     document.getElementById('communityControls').disabled = true;
-    document.getElementById('addReceiptBtn').disabled = true;
-    document.getElementById('settleBtn').disabled = true;
+    updateHomeActions();
     communityError.classList.remove('show');
+    communityStatus.classList.add('hidden');
     try { await action(); }
     catch (error) {
       communitySelect.value = community?.id || '';
@@ -516,8 +588,7 @@
     } finally {
       communityBusy = false;
       document.getElementById('communityControls').disabled = false;
-      document.getElementById('addReceiptBtn').disabled = false;
-      document.getElementById('settleBtn').disabled = false;
+      updateHomeActions();
     }
   }
 
@@ -538,14 +609,17 @@
       receipts = data.receipts;
     } else {
       community = null;
-      participants = loadJSON('rs_participants', ['', '', '', '']);
-      receipts = loadJSON('rs_receipts', []);
+      participants = readLocalList('rs_participants', ['', '', '', ''], entry => typeof entry === 'string');
+      receipts = readLocalList('rs_receipts', [], validSavedReceipt);
     }
     if (previousId !== community?.id) {
       pendingDeleteId = null;
       document.getElementById('inviteResult').classList.add('hidden');
+      inviteText.value = '';
+      setCommunityDeleteConfirmation(false);
     }
     document.getElementById('inviteActions').classList.toggle('hidden', !community?.canInvite);
+    document.getElementById('communityDeleteActions').classList.toggle('hidden', !community?.canDelete);
     communitySelect.value = id;
     try { localStorage.setItem('rs_community', JSON.stringify(id)); } catch {}
     participantsError.classList.remove('show');
@@ -556,9 +630,54 @@
 
   communitySelect.addEventListener('change', () => communityAction(() => openCommunity(communitySelect.value)));
   document.getElementById('refreshCommunityBtn').addEventListener('click', () => communityAction(async () => {
-    await listCommunities();
-    if (community) await openCommunity(community.id);
+    const available = await listCommunities();
+    if (community) {
+      if (available.some(entry => entry.id === community.id)) await openCommunity(community.id);
+      else await forgetCommunity(community.id, 'Община больше недоступна.');
+    }
   }));
+
+  function setCommunityDeleteConfirmation(visible) {
+    showCommunityDeleteBtn.classList.toggle('hidden', visible);
+    communityDeleteConfirm.classList.toggle('hidden', !visible);
+  }
+
+  async function forgetCommunity(id, message) {
+    Array.from(communitySelect.options).find(option => option.value === id)?.remove();
+    await openCommunity('');
+    showCommunityStatus(message);
+  }
+
+  function showCommunityStatus(message) {
+    communityStatus.textContent = message;
+    communityStatus.classList.remove('hidden');
+  }
+
+  showCommunityDeleteBtn.addEventListener('click', () => {
+    if (!community?.canDelete) return;
+    document.getElementById('communityDeleteWarning').textContent =
+      'Удалить общину «' + community.name + '»? Её чеки и приглашения будут удалены. В приложении это действие нельзя отменить.';
+    setCommunityDeleteConfirmation(true);
+    document.getElementById('cancelCommunityDeleteBtn').focus();
+  });
+  document.getElementById('cancelCommunityDeleteBtn').addEventListener('click', () => {
+    setCommunityDeleteConfirmation(false);
+    showCommunityDeleteBtn.focus();
+  });
+  document.getElementById('deleteCommunityBtn').addEventListener('click', () => {
+    if (!community?.canDelete || communityDeleteConfirm.classList.contains('hidden')) return;
+    communityAction(async () => {
+      const id = community.id;
+      try {
+        await api('/communities/' + id, 'DELETE');
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        await forgetCommunity(id, 'Община больше недоступна.');
+        return;
+      }
+      await forgetCommunity(id, 'Община удалена.');
+    });
+  });
   document.getElementById('createCommunityForm').addEventListener('submit', event => {
     event.preventDefault();
     communityAction(async () => {
@@ -573,30 +692,23 @@
       document.getElementById('communityActions').open = false;
     });
   });
-  document.getElementById('joinCommunityForm').addEventListener('submit', event => {
-    event.preventDefault();
-    communityAction(async () => {
-      const input = document.getElementById('communityInviteCode');
-      const code = input.value.trim().match(/^(?:https:\/\/t\.me\/receipt_splitter_demo_bot\?startapp=join_|join_)?([a-f0-9]{48})$/)?.[1];
-      if (!code) throw new Error('Вставь код или ссылку из приглашения.');
-      const { id } = await api('/join', 'POST', { code });
-      await listCommunities();
-      await openCommunity(id);
-      input.value = '';
-      document.getElementById('communityActions').open = false;
-    });
-  });
   document.getElementById('createInviteForm').addEventListener('submit', event => {
     event.preventDefault();
     communityAction(async () => {
       const input = document.getElementById('inviteUsername');
       const { code } = await api('/communities/' + community.id + '/invites', 'POST', { username: input.value.trim() });
-      const result = document.getElementById('inviteText');
-      result.value = 'https://t.me/receipt_splitter_demo_bot?startapp=join_' + code +
-        '\n\nЕсли ссылка не открыла приложение, открой @receipt_splitter_demo_bot, нажми «Открыть чек» и вставь код:\n' + code;
+      inviteText.value = 'https://t.me/receipt_splitter_demo_bot?startapp=join_' + code;
+      copyInviteBtn.textContent = 'Скопировать ссылку';
       document.getElementById('inviteResult').classList.remove('hidden');
-      result.select();
     });
+  });
+  copyInviteBtn.addEventListener('click', async () => {
+    const link = inviteText.value;
+    if (!link) return;
+    const copied = await copyField(inviteText);
+    if (inviteText.value === link) {
+      copyInviteBtn.textContent = copied ? 'Ссылка скопирована' : 'Скопируй выделенную ссылку';
+    }
   });
 
   function showingCommunityHome() {
@@ -616,8 +728,10 @@
       receipts = data.receipts;
       renderParticipants();
       renderReceiptsList();
-    } catch {
-      // The last successful list stays visible. Manual refresh reports the error.
+    } catch (error) {
+      if (error.status === 404 && showingCommunityHome() && communityEpoch === epoch && community.id === id) {
+        await communityAction(() => forgetCommunity(id, 'Община больше недоступна.'));
+      }
     } finally {
       refreshingCommunity = false;
     }
@@ -626,7 +740,10 @@
   // ---------- Participants (roster) ----------
   function renderParticipants() {
     participantsList.innerHTML = '';
-    document.getElementById('addParticipantBtn').classList.toggle('hidden', Boolean(community));
+    const rosterButton = document.getElementById('addParticipantBtn');
+    const rosterDamaged = damagedStorage.has('rs_participants');
+    rosterButton.classList.toggle('hidden', Boolean(community));
+    rosterButton.disabled = rosterDamaged;
     participants.forEach((name, i) => {
       if (community) {
         const member = document.createElement('p');
@@ -639,10 +756,11 @@
       row.className = 'participant-row';
       row.innerHTML =
         '<input type="text" value="' + escapeHtml(name) + '" placeholder="Имя ' + (i + 1) + '" data-i="' + i + '">' +
-        (participants.length > 2 ? '<button class="rm-btn" data-i="' + i + '">✕</button>' : '');
+        (participants.length > 2 && !rosterDamaged ? '<button class="rm-btn" data-i="' + i + '">✕</button>' : '');
       participantsList.appendChild(row);
     });
     participantsList.querySelectorAll('input').forEach(inp => {
+      inp.readOnly = rosterDamaged;
       inp.addEventListener('input', () => { participants[Number(inp.dataset.i)] = inp.value; persist(); });
     });
     participantsList.querySelectorAll('.rm-btn').forEach(btn => {
@@ -669,8 +787,9 @@
         card.className = 'receipt-card confirm-delete';
         card.innerHTML =
           '<span class="confirm-text">Удалить «' + escapeHtml(r.shop) + '»?</span>' +
-          '<button class="confirm-yes-btn" data-id="' + r.id + '">Да, удалить</button>' +
-          '<button class="confirm-no-btn" data-id="' + r.id + '">Отмена</button>';
+          '<button class="confirm-yes-btn">Да, удалить</button>' +
+          '<button class="confirm-no-btn">Отмена</button>';
+        card.querySelector('.confirm-yes-btn').dataset.id = r.id;
         receiptsList.appendChild(card);
         return;
       }
@@ -682,8 +801,10 @@
           '<div class="r-shop">' + escapeHtml(r.shop) + '</div>' +
           '<div class="r-meta">' + escapeHtml(r.date) + ' · платил(а) ' + escapeHtml(r.payer) + '</div>' +
         '</div>' +
-        '<div class="r-total">' + fmt(r.total, r.currency) + '</div>' +
-        (canEditReceipt(r) ? '<button class="rm-btn" data-id="' + r.id + '">✕</button>' : '');
+        '<div class="r-total">' + fmtHtml(r.total, r.currency) + '</div>' +
+        (canEditReceipt(r) ? '<button class="rm-btn">✕</button>' : '');
+      const removeButton = card.querySelector('.rm-btn');
+      if (removeButton) removeButton.dataset.id = r.id;
       card.querySelector('.r-info').addEventListener('click', () => openReceiptDetail(r.id));
       card.querySelector('.r-total').addEventListener('click', () => openReceiptDetail(r.id));
       receiptsList.appendChild(card);
@@ -722,12 +843,15 @@
   }
   renderReceiptsList();
 
-  function canEditReceipt(receipt) { return !community || receipt.editable; }
+  function canEditReceipt(receipt) {
+    return community ? receipt.editable : !damagedStorage.has('rs_receipts');
+  }
 
   function goHome() {
     editingReceiptId = null;
     title.textContent = community?.name || 'Домохозяйство';
     shopLine.textContent = community ? 'Чеки общины' : 'Твои чеки';
+    updateHomeActions();
     renderReceiptsList();
     showOnly(['homeScreen']);
   }
@@ -742,12 +866,12 @@
     showOnly(['promptScreen']);
   }
 
-  async function copyPrompt(textarea) {
+  async function copyField(field) {
     try {
-      await navigator.clipboard.writeText(SYSTEM_PROMPT);
+      await navigator.clipboard.writeText(field.value);
       return true;
     } catch {
-      textarea.select();
+      field.select();
       try { return document.execCommand('copy'); }
       catch { return false; }
     }
@@ -762,7 +886,7 @@
     textarea.style.position = 'fixed';
     textarea.style.opacity = '0';
     document.body.appendChild(textarea);
-    const copied = await copyPrompt(textarea);
+    const copied = await copyField(textarea);
     textarea.remove();
     if (!copied) {
       openPrompt('payer');
@@ -784,7 +908,7 @@
   });
   document.getElementById('copyPromptBtn').addEventListener('click', async () => {
     const btn = document.getElementById('copyPromptBtn');
-    const copied = await copyPrompt(document.getElementById('promptTextarea'));
+    const copied = await copyField(document.getElementById('promptTextarea'));
     const original = btn.textContent;
     btn.textContent = copied ? 'Скопировано ✓' : 'Скопируй выделенный текст вручную';
     setTimeout(() => { btn.textContent = original; }, 1500);
@@ -827,6 +951,11 @@
     const names = getCleanParticipants();
     if (!community && names.length < 2) {
       participantsError.textContent = 'Впиши имена хотя бы двух участников, прежде чем добавлять чек.';
+      participantsError.classList.add('show');
+      return;
+    }
+    if (new Set(names).size !== names.length) {
+      participantsError.textContent = 'У участников должны быть разные имена. Добавь отличительный знак к одному из одинаковых имён.';
       participantsError.classList.add('show');
       return;
     }
@@ -912,13 +1041,18 @@
     const items = [];
     for (const row of parsed) {
       const name = (row && typeof row.name === 'string') ? row.name.trim() : '';
-      const qty = Number(row && row.qty);
-      const price = Number(row && row.price);
-      if (!name || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(price) || price < 0) {
-        importError.textContent = 'В одной из позиций некорректные поля: нужны непустое name, число qty > 0 и число price ≥ 0.';
+      const qty = row?.qty;
+      const price = row?.price;
+      if (!name || !validNewAmount(qty) || qty <= 0 || !validNewAmount(price) || !validNewAmount(qty * price)) {
+        importError.textContent = 'Проверь название, количество и цену. Количество и цена должны быть числами, а сумма позиции — в допустимом диапазоне.';
         importError.classList.add('show'); return;
       }
       items.push({ name, qty, price, sum: qty * price });
+    }
+    if (!validNewAmount(items.reduce((sum, item) => sum + item.sum, 0))) {
+      importError.textContent = 'Сумма чека слишком большая.';
+      importError.classList.add('show');
+      return;
     }
     draftItems = items;
     if (!draftShop || draftShop === 'Чек') draftShop = 'Твой чек';
@@ -930,10 +1064,19 @@
 
   function qtyLabel(qty) { return Number.isInteger(qty) ? (qty + ' шт') : (qty + ' (вес/объём)'); }
 
+  function parseDecimal(value) {
+    const raw = value.trim();
+    return /^\+?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:e[+-]?\d+)?$/i.test(raw) ? Number(raw.replace(',', '.')) : NaN;
+  }
+
+  function validNewAmount(value) { return validAmount(value) && value <= MAX_RECEIPT_AMOUNT; }
+
   let previewEditingIndex = null;
 
   function renderPreview() {
     const previewList = document.getElementById('previewList');
+    const editPriceError = document.getElementById('editPriceError');
+    editPriceError.classList.remove('show');
     previewList.innerHTML = '';
     let total = 0;
     draftItems.forEach((item, i) => {
@@ -943,14 +1086,14 @@
       if (previewEditingIndex === i) {
         row.innerHTML =
           '<div class="info"><div class="p-name">' + escapeHtml(item.name) + '</div>' +
-          '<div class="p-meta">' + qtyLabel(item.qty) + ' × <input type="text" class="edit-price-input" id="editPriceInput" value="' + item.price + '"></div></div>' +
+          '<div class="p-meta">' + escapeHtml(qtyLabel(item.qty)) + ' × <input type="text" class="edit-price-input" id="editPriceInput" value="' + escapeHtml(item.price) + '"></div></div>' +
           '<button class="edit-save-btn" data-i="' + i + '">✓</button>' +
           '<button class="del-btn" data-i="' + i + '">✕</button>';
       } else {
         row.innerHTML =
           '<div class="info"><div class="p-name">' + escapeHtml(item.name) + '</div>' +
-          '<div class="p-meta">' + qtyLabel(item.qty) + ' × ' + fmt(item.price, draftCurrency) + '</div></div>' +
-          '<div class="p-sum">' + fmt(item.sum, draftCurrency) + '</div>' +
+          '<div class="p-meta">' + escapeHtml(qtyLabel(item.qty)) + ' × ' + fmtHtml(item.price, draftCurrency) + '</div></div>' +
+          '<div class="p-sum">' + fmtHtml(item.sum, draftCurrency) + '</div>' +
           '<button class="edit-btn" data-i="' + i + '">✎</button>' +
           '<button class="del-btn" data-i="' + i + '">✕</button>';
       }
@@ -975,11 +1118,17 @@
     });
     function commitPriceEdit(i) {
       const input = document.getElementById('editPriceInput');
-      const newPrice = Number(input.value.replace(',', '.'));
-      if (Number.isFinite(newPrice) && newPrice >= 0) {
-        draftItems[i].price = newPrice;
-        draftItems[i].sum = draftItems[i].qty * newPrice;
+      const newPrice = parseDecimal(input.value);
+      const item = draftItems[i];
+      const itemSum = item.qty * newPrice;
+      const receiptSum = draftItems.reduce((sum, row, index) => sum + (index === i ? itemSum : row.sum), 0);
+      if (!validNewAmount(newPrice) || !validNewAmount(itemSum) || !validNewAmount(receiptSum)) {
+        editPriceError.textContent = 'Введи цену от нуля. Сумма позиции и всего чека должна быть не больше 1 трлн.';
+        editPriceError.classList.add('show');
+        return;
       }
+      item.price = newPrice;
+      item.sum = itemSum;
       previewEditingIndex = null;
       renderPreview();
     }
@@ -1002,12 +1151,18 @@
     const addItemError = document.getElementById('addItemError');
     addItemError.classList.remove('show');
     const name = nameInput.value.trim();
-    const qty = Number(qtyInput.value.replace(',', '.'));
-    const price = Number(priceInput.value.replace(',', '.'));
+    const qty = parseDecimal(qtyInput.value);
+    const price = parseDecimal(priceInput.value);
     if (!name) { addItemError.textContent = 'Впиши название позиции.'; addItemError.classList.add('show'); return; }
-    if (!Number.isFinite(qty) || qty <= 0) { addItemError.textContent = 'Количество должно быть числом больше нуля.'; addItemError.classList.add('show'); return; }
-    if (!Number.isFinite(price) || price < 0) { addItemError.textContent = 'Цена должна быть числом.'; addItemError.classList.add('show'); return; }
-    draftItems.push({ name, qty, price, sum: qty * price });
+    if (!validNewAmount(qty) || qty <= 0) { addItemError.textContent = 'Количество должно быть числом больше нуля и не больше 1 трлн.'; addItemError.classList.add('show'); return; }
+    if (!validNewAmount(price)) { addItemError.textContent = 'Цена должна быть числом от нуля до 1 трлн.'; addItemError.classList.add('show'); return; }
+    const sum = qty * price;
+    if (!validNewAmount(draftItems.reduce((total, item) => total + item.sum, 0) + sum)) {
+      addItemError.textContent = 'Сумма чека не должна превышать 1 трлн.';
+      addItemError.classList.add('show');
+      return;
+    }
+    draftItems.push({ name, qty, price, sum });
     nameInput.value = ''; qtyInput.value = '1'; priceInput.value = '';
     renderPreview(); nameInput.focus();
   });
@@ -1089,9 +1244,9 @@
     }
 
     assignCard.innerHTML =
-      '<div class="qty">' + qtyLabel(item.qty) + ' · ' + fmt(item.price, draftCurrency) + ' за ед.</div>' +
+      '<div class="qty">' + escapeHtml(qtyLabel(item.qty)) + ' · ' + fmtHtml(item.price, draftCurrency) + ' за ед.</div>' +
       '<div class="name">' + escapeHtml(item.name) + '</div>' +
-      '<div class="price">' + fmt(item.sum, draftCurrency) + '</div>' + bodyHtml;
+      '<div class="price">' + fmtHtml(item.sum, draftCurrency) + '</div>' + bodyHtml;
 
     if (units > 1) {
       assignCard.querySelectorAll('.inc').forEach(btn => btn.addEventListener('click', () => {
@@ -1213,7 +1368,7 @@
       assignError.classList.remove('show');
       try {
         const result = await api('/communities/' + community.id + '/receipts/' + receipt.id, 'PUT',
-          { ...receipt, revision: previous?.revision ?? 0 });
+          { ...receipt, assignments, revision: previous?.revision ?? 0 });
         receipt = result.receipt;
       } catch (error) {
         index = RECEIPT.length - 1;
@@ -1236,7 +1391,7 @@
       return;
     }
     document.getElementById('savedSummary').textContent =
-      draftShop + ' · ' + fmt(total, draftCurrency) + ' · заплатил(а) ' + draftPayer;
+      receipt.shop + ' · ' + fmt(receipt.total, receipt.currency) + ' · заплатил(а) ' + receipt.payer;
     title.textContent = 'Готово';
     shopLine.textContent = '';
     showOnly(['savedScreen']);
@@ -1260,7 +1415,7 @@
       document.getElementById('detailBreakdownList').innerHTML = '';
       document.getElementById('detailOwedList').innerHTML = Object.keys(r.owed || {}).map(p =>
         '<div class="balance-row"><span class="b-name">' + escapeHtml(p) + (p === r.payer ? ' (платил(а))' : '') + '</span>' +
-        '<span class="b-value pos">' + fmt(r.owed[p], curr) + '</span></div>'
+        '<span class="b-value pos">' + fmtHtml(r.owed[p], curr) + '</span></div>'
       ).join('');
       title.textContent = r.shop;
       shopLine.textContent = r.date + ' · платил(а) ' + r.payer;
@@ -1271,20 +1426,20 @@
     document.getElementById('detailItemsList').innerHTML = r.items.map(item =>
       '<div class="preview-row">' +
         '<div class="info"><div class="p-name">' + escapeHtml(item.name) + '</div>' +
-        '<div class="p-meta">' + qtyLabel(item.qty) + ' × ' + fmt(item.price, r.currency) + '</div></div>' +
-        '<div class="p-sum">' + fmt(item.sum, r.currency) + '</div>' +
+        '<div class="p-meta">' + escapeHtml(qtyLabel(item.qty)) + ' × ' + fmtHtml(item.price, r.currency) + '</div></div>' +
+        '<div class="p-sum">' + fmtHtml(item.sum, r.currency) + '</div>' +
       '</div>'
     ).join('');
     document.getElementById('detailTotal').textContent = fmt(r.total, r.currency);
 
     document.getElementById('detailBreakdownList').innerHTML = r.breakdown.map(b =>
       '<div class="balance-row"><span class="b-name">' + escapeHtml(b.who) + ' · ' + escapeHtml(b.name) + '</span>' +
-      '<span class="b-value zero">' + fmt(b.sum, r.currency) + '</span></div>'
+      '<span class="b-value zero">' + fmtHtml(b.sum, r.currency) + '</span></div>'
     ).join('');
 
     document.getElementById('detailOwedList').innerHTML = Object.keys(r.owed).map(p =>
       '<div class="balance-row"><span class="b-name">' + escapeHtml(p) + (p === r.payer ? ' (платил(а))' : '') + '</span>' +
-      '<span class="b-value pos">' + fmt(r.owed[p], r.currency) + '</span></div>'
+      '<span class="b-value pos">' + fmtHtml(r.owed[p], r.currency) + '</span></div>'
     ).join('');
 
     title.textContent = r.shop;
@@ -1391,7 +1546,7 @@
           const sign = v > 0.5 ? '+' : '';
           const note = v > 0.5 ? 'ему должны' : (v < -0.5 ? 'должен' : 'в расчёте');
           return '<div class="balance-row"><span class="b-name">' + escapeHtml(n) + ' <span class="b-note">(' + note + ')</span></span>' +
-            '<span class="b-value ' + cls + '">' + sign + fmt(v, curr) + '</span></div>';
+            '<span class="b-value ' + cls + '">' + sign + fmtHtml(v, curr) + '</span></div>';
         }).join('');
 
       const transfers = computeSettlement(balance);
@@ -1401,7 +1556,7 @@
           : transfers.map(t =>
               '<div class="transfer-row">' +
                 '<span class="t-names">' + escapeHtml(t.from) + ' <span class="t-arrow">→</span> ' + escapeHtml(t.to) + '</span>' +
-                '<span class="t-amount">' + fmt(t.amount, curr) + '</span>' +
+                '<span class="t-amount">' + fmtHtml(t.amount, curr) + '</span>' +
               '</div>'
             ).join(''));
     });
@@ -1434,17 +1589,30 @@
   telegram?.ready();
   if (receiptApi && telegram?.initData) {
     document.getElementById('communityPanel').classList.remove('hidden');
-    const inviteParam = telegram.initDataUnsafe?.start_param;
-    const hasInvite = /^join_[a-f0-9]{48}$/.test(inviteParam || '');
-    if (hasInvite) {
-      document.getElementById('communityActions').open = true;
-      document.getElementById('communityInviteCode').value = inviteParam;
-    }
+    const inviteParam = new URLSearchParams(telegram.initData).get('start_param');
     communityAction(async () => {
+      let joinedId;
+      let inviteError;
+      if (inviteParam?.startsWith('join_')) {
+        const code = /^join_([a-f0-9]{48})$/.exec(inviteParam)?.[1];
+        try {
+          if (!code) throw new Error('Ссылка-приглашение недействительна.');
+          const joined = await api('/join', 'POST', { code });
+          joinedId = joined.id;
+        } catch (error) {
+          inviteError = error;
+        }
+      }
       const choices = await listCommunities();
       const saved = loadJSON('rs_community', null);
       const initial = saved === null && choices.length === 1 ? choices[0].id : saved;
-      if (!hasInvite && choices.some(choice => choice.id === initial)) await openCommunity(initial);
+      if (joinedId) {
+        await openCommunity(joinedId);
+        showCommunityStatus('Ты в общине «' + community.name + '».');
+      } else if (choices.some(choice => choice.id === initial)) {
+        await openCommunity(initial);
+      }
+      if (inviteError) throw inviteError;
     });
     window.addEventListener('focus', refreshActiveCommunity);
     document.addEventListener('visibilitychange', refreshActiveCommunity);
