@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <!-- После изменения встроенного JS обнови SHA-256 для его текста в UTF-8 с переводами строк LF. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-l6J+4/BLYPfY0f8Lpa8dh2At/pSV6aWp4tK26DL/WkQ=' https://telegram.org/js/telegram-web-app.js; style-src 'unsafe-inline'; connect-src https://receipt-splitter-api.rs-dbelousovww.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-tNth3R1+IJZGk+ct94TzIfzkmHi7lBvSoR7+/NCZtks=' https://telegram.org/js/telegram-web-app.js; style-src 'unsafe-inline'; connect-src https://receipt-splitter-api.rs-dbelousovww.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="receipt-api" content="https://receipt-splitter-api.rs-dbelousovww.workers.dev">
@@ -204,6 +204,7 @@
     <div class="panel hidden" id="communityPanel">
       <p class="error-box" id="communityError" role="alert"></p>
       <fieldset class="community-controls" id="communityControls">
+        <div class="hidden" id="pendingContactInvites"></div>
         <div class="field">
           <label for="communitySelect">Община</label>
           <select id="communitySelect"><option value="">Личные чеки на устройстве</option></select>
@@ -215,8 +216,9 @@
             <button class="secondary-btn">Создать общину</button>
           </form>
         </details>
+        <button type="button" class="secondary-btn hidden" id="inviteContactsBtn">Пригласить</button>
         <details class="hidden" id="inviteActions">
-          <summary>Пригласить участника</summary>
+          <summary>Пригласить по ссылке</summary>
           <form id="createInviteForm">
             <input type="text" id="inviteUsername" aria-label="Telegram-ник участника" placeholder="@username (можно оставить пустым)" maxlength="33" autocapitalize="none" spellcheck="false">
             <button class="secondary-btn">Создать приглашение</button>
@@ -594,10 +596,25 @@
   }
 
   async function listCommunities() {
-    const { communities } = await api('/communities');
+    const { communities, invitations = [] } = await api('/communities');
     const options = communities.map(entry => new Option(entry.name, entry.id));
     communitySelect.replaceChildren(new Option('Личные чеки на устройстве', ''), ...options);
     communitySelect.value = community?.id || '';
+    const pending = document.getElementById('pendingContactInvites');
+    pending.replaceChildren(...invitations.map(({ id, name }) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary-btn';
+      button.textContent = 'Вступить в «' + name + '»';
+      button.addEventListener('click', () => communityAction(async () => {
+        const joined = await api('/join', 'POST', { contactInviteId: id });
+        await listCommunities();
+        await openCommunity(joined.id);
+        showCommunityStatus('Ты в общине «' + community.name + '».');
+      }));
+      return button;
+    }));
+    pending.classList.toggle('hidden', invitations.length === 0);
     return communities;
   }
 
@@ -619,7 +636,9 @@
       inviteText.value = '';
       setCommunityDeleteConfirmation(false);
     }
-    document.getElementById('inviteActions').classList.toggle('hidden', !community?.canInvite);
+    const canPickContacts = typeof telegram?.requestChat === 'function' && telegram.isVersionAtLeast('9.6');
+    document.getElementById('inviteContactsBtn').classList.toggle('hidden', !community?.canInvite || !canPickContacts);
+    document.getElementById('inviteActions').classList.toggle('hidden', !community?.canInvite || canPickContacts);
     document.getElementById('communityDeleteActions').classList.toggle('hidden', !community?.canDelete);
     communitySelect.value = id;
     try { localStorage.setItem('rs_community', JSON.stringify(id)); } catch {}
@@ -693,6 +712,24 @@
       document.getElementById('communityActions').open = false;
     });
   });
+  document.getElementById('inviteContactsBtn').addEventListener('click', () => communityAction(async () => {
+    const endpoint = '/communities/' + community.id + '/contact-invites';
+    const { id, buttonId } = await api(endpoint, 'POST');
+    const selected = await new Promise(resolve => telegram.requestChat(buttonId, resolve));
+    if (!selected) return;
+    showCommunityStatus('Отправляем приглашения…');
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const { selected, total, sent, unavailable } = await api(endpoint + '/' + id);
+      if (selected && sent + unavailable === total) {
+        if (!total) showCommunityStatus('Выбранные люди уже в общине.');
+        else if (unavailable) showCommunityStatus('Отправлено в Telegram: ' + sent + '. В приложении ждут приглашения: ' + unavailable + '.');
+        else showCommunityStatus('Отправлено приглашений: ' + sent + '.');
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    showCommunityStatus('Telegram ещё не подтвердил отправку. Приглашения, которые не удастся доставить, будут доступны в приложении.');
+  }));
   document.getElementById('createInviteForm').addEventListener('submit', event => {
     event.preventDefault();
     communityAction(async () => {
