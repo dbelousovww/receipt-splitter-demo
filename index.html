@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="receipt-api" content="https://receipt-splitter-api.rs-dbelousovww.workers.dev">
 <title>Разбор чеков и взаимозачёт</title>
 <script src="https://telegram.org/js/telegram-web-app.js?65"></script>
 <style>
@@ -39,6 +40,11 @@
   .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.35s ease; border-radius: 999px; }
 
   .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 24px 22px; box-shadow: var(--shadow); margin-bottom: 16px; }
+  .community-controls { border: 0; padding: 0; margin: 0; min-width: 0; }
+  .community-controls form { margin-top: 12px; }
+  .community-controls details { margin-top: 12px; }
+  .community-controls summary { cursor: pointer; font-size: 14px; }
+  .community-member { margin: 4px 0; overflow-wrap: anywhere; }
   .field { margin-bottom: 16px; }
   .field label { display: block; font-size: 13px; color: var(--ink-soft); margin-bottom: 8px; }
 
@@ -190,6 +196,38 @@
 
   <!-- HOME SCREEN -->
   <div id="homeScreen">
+    <div class="panel hidden" id="communityPanel">
+      <fieldset class="community-controls" id="communityControls">
+        <div class="field">
+          <label for="communitySelect">Община</label>
+          <select id="communitySelect"><option value="">Личные чеки на устройстве</option></select>
+        </div>
+        <details id="communityActions">
+          <summary>Создать общину или вступить</summary>
+          <form id="createCommunityForm">
+            <input type="text" id="communityName" aria-label="Название общины" placeholder="Название общины" maxlength="80" required>
+            <button class="secondary-btn">Создать общину</button>
+          </form>
+          <form id="joinCommunityForm">
+            <input type="text" id="communityInviteCode" aria-label="Приглашение" placeholder="Ссылка или код приглашения" maxlength="200" required>
+            <button class="secondary-btn">Вступить в общину</button>
+          </form>
+        </details>
+        <details class="hidden" id="inviteActions">
+          <summary>Пригласить участника</summary>
+          <form id="createInviteForm">
+            <input type="text" id="inviteUsername" aria-label="Telegram-ник участника" placeholder="@username (можно оставить пустым)" maxlength="33" autocapitalize="none" spellcheck="false">
+            <button class="secondary-btn">Создать приглашение</button>
+          </form>
+          <div class="hidden" id="inviteResult">
+            <label for="inviteText">Отправь участнику ссылку и код приглашения</label>
+            <textarea id="inviteText" readonly></textarea>
+          </div>
+        </details>
+        <button type="button" class="link-btn" id="refreshCommunityBtn">Обновить данные</button>
+      </fieldset>
+      <p class="error-box" id="communityError" role="alert"></p>
+    </div>
     <div class="panel">
       <p class="section-label">Участники</p>
       <div id="participantsList"></div>
@@ -293,6 +331,7 @@
   <!-- Assignment screen -->
   <div id="assignScreen" class="hidden">
     <div class="assign-card" id="assignCard"></div>
+    <p class="error-box" id="assignError" role="alert"></p>
     <div class="nav-row">
       <button class="back-item-btn" id="backItemBtn">←</button>
       <button class="primary-btn" id="nextItemBtn" style="flex:1;">Далее</button>
@@ -372,7 +411,10 @@
       return { name: base.name, qty: base.count, price: price, sum: base.count * price };
     });
   }
-  function escapeHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
   function todayLabel() {
     const d = new Date();
     return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
@@ -397,6 +439,13 @@
   // ---------- Persistent state ----------
   let participants = loadJSON('rs_participants', ["", "", "", ""]);
   let receipts = loadJSON('rs_receipts', []); // {id, shop, date, payer, currency, total, owed:{name:amount}, breakdown:[...]}
+  let community = null;
+  let communityBusy = false;
+  let refreshingCommunity = false;
+  let communityEpoch = 0;
+  let newCommunityDraft = null;
+  const telegram = window.Telegram?.WebApp;
+  const receiptApi = document.querySelector('meta[name="receipt-api"]').content;
 
   function loadJSON(key, fallback) {
     try {
@@ -406,6 +455,7 @@
     } catch (e) { return fallback; }
   }
   function persist() {
+    if (community) return;
     localStorage.setItem('rs_participants', JSON.stringify(participants));
     localStorage.setItem('rs_receipts', JSON.stringify(receipts));
   }
@@ -429,11 +479,162 @@
   const noReceiptsHint = document.getElementById('noReceiptsHint');
   const homeError = document.getElementById('homeError');
   const participantsError = document.getElementById('participantsError');
+  const communitySelect = document.getElementById('communitySelect');
+  const communityError = document.getElementById('communityError');
+
+  async function api(path, method = 'GET', body) {
+    let response;
+    try {
+      response = await fetch(receiptApi + path, {
+        method,
+        redirect: 'error',
+        headers: { 'X-Telegram-Init-Data': telegram.initData, ...(body && { 'Content-Type': 'application/json' }) },
+        body: body && JSON.stringify(body)
+      });
+    } catch {
+      throw new Error('Не удалось соединиться с сервером. Попробуй ещё раз.');
+    }
+    if (response.status === 401) throw new Error('Закрой мини-приложение и открой его снова из Telegram.');
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result) throw new Error(result?.error || 'Сервер временно недоступен.');
+    return result;
+  }
+
+  async function communityAction(action) {
+    if (communityBusy) return;
+    communityBusy = true;
+    communityEpoch++;
+    document.getElementById('communityControls').disabled = true;
+    document.getElementById('addReceiptBtn').disabled = true;
+    document.getElementById('settleBtn').disabled = true;
+    communityError.classList.remove('show');
+    try { await action(); }
+    catch (error) {
+      communitySelect.value = community?.id || '';
+      communityError.textContent = error.message;
+      communityError.classList.add('show');
+    } finally {
+      communityBusy = false;
+      document.getElementById('communityControls').disabled = false;
+      document.getElementById('addReceiptBtn').disabled = false;
+      document.getElementById('settleBtn').disabled = false;
+    }
+  }
+
+  async function listCommunities() {
+    const { communities } = await api('/communities');
+    const options = communities.map(entry => new Option(entry.name, entry.id));
+    communitySelect.replaceChildren(new Option('Личные чеки на устройстве', ''), ...options);
+    communitySelect.value = community?.id || '';
+    return communities;
+  }
+
+  async function openCommunity(id) {
+    const previousId = community?.id;
+    if (id) {
+      const data = await api('/communities/' + id);
+      community = data.community;
+      participants = data.participants;
+      receipts = data.receipts;
+    } else {
+      community = null;
+      participants = loadJSON('rs_participants', ['', '', '', '']);
+      receipts = loadJSON('rs_receipts', []);
+    }
+    if (previousId !== community?.id) {
+      pendingDeleteId = null;
+      document.getElementById('inviteResult').classList.add('hidden');
+    }
+    document.getElementById('inviteActions').classList.toggle('hidden', !community?.canInvite);
+    communitySelect.value = id;
+    try { localStorage.setItem('rs_community', JSON.stringify(id)); } catch {}
+    participantsError.classList.remove('show');
+    homeError.classList.remove('show');
+    renderParticipants();
+    goHome();
+  }
+
+  communitySelect.addEventListener('change', () => communityAction(() => openCommunity(communitySelect.value)));
+  document.getElementById('refreshCommunityBtn').addEventListener('click', () => communityAction(async () => {
+    await listCommunities();
+    if (community) await openCommunity(community.id);
+  }));
+  document.getElementById('createCommunityForm').addEventListener('submit', event => {
+    event.preventDefault();
+    communityAction(async () => {
+      const input = document.getElementById('communityName');
+      const name = input.value.trim();
+      if (newCommunityDraft?.name !== name) newCommunityDraft = { id: crypto.randomUUID(), name };
+      const { id } = await api('/communities', 'POST', newCommunityDraft);
+      await listCommunities();
+      await openCommunity(id);
+      newCommunityDraft = null;
+      input.value = '';
+      document.getElementById('communityActions').open = false;
+    });
+  });
+  document.getElementById('joinCommunityForm').addEventListener('submit', event => {
+    event.preventDefault();
+    communityAction(async () => {
+      const input = document.getElementById('communityInviteCode');
+      const code = input.value.trim().match(/^(?:https:\/\/t\.me\/receipt_splitter_demo_bot\?startapp=join_|join_)?([a-f0-9]{48})$/)?.[1];
+      if (!code) throw new Error('Вставь код или ссылку из приглашения.');
+      const { id } = await api('/join', 'POST', { code });
+      await listCommunities();
+      await openCommunity(id);
+      input.value = '';
+      document.getElementById('communityActions').open = false;
+    });
+  });
+  document.getElementById('createInviteForm').addEventListener('submit', event => {
+    event.preventDefault();
+    communityAction(async () => {
+      const input = document.getElementById('inviteUsername');
+      const { code } = await api('/communities/' + community.id + '/invites', 'POST', { username: input.value.trim() });
+      const result = document.getElementById('inviteText');
+      result.value = 'https://t.me/receipt_splitter_demo_bot?startapp=join_' + code +
+        '\n\nЕсли ссылка не открыла приложение, открой @receipt_splitter_demo_bot, нажми «Открыть чек» и вставь код:\n' + code;
+      document.getElementById('inviteResult').classList.remove('hidden');
+      result.select();
+    });
+  });
+
+  function showingCommunityHome() {
+    return community && !communityBusy && !pendingDeleteId && !document.hidden &&
+      !document.getElementById('homeScreen').classList.contains('hidden');
+  }
+
+  async function refreshActiveCommunity() {
+    if (refreshingCommunity || !showingCommunityHome()) return;
+    const epoch = communityEpoch;
+    const id = community.id;
+    refreshingCommunity = true;
+    try {
+      const data = await api('/communities/' + id);
+      if (!showingCommunityHome() || communityEpoch !== epoch || community.id !== id) return;
+      participants = data.participants;
+      receipts = data.receipts;
+      renderParticipants();
+      renderReceiptsList();
+    } catch {
+      // The last successful list stays visible. Manual refresh reports the error.
+    } finally {
+      refreshingCommunity = false;
+    }
+  }
 
   // ---------- Participants (roster) ----------
   function renderParticipants() {
     participantsList.innerHTML = '';
+    document.getElementById('addParticipantBtn').classList.toggle('hidden', Boolean(community));
     participants.forEach((name, i) => {
+      if (community) {
+        const member = document.createElement('p');
+        member.className = 'community-member';
+        member.textContent = name;
+        participantsList.appendChild(member);
+        return;
+      }
       const row = document.createElement('div');
       row.className = 'participant-row';
       row.innerHTML =
@@ -482,7 +683,7 @@
           '<div class="r-meta">' + escapeHtml(r.date) + ' · платил(а) ' + escapeHtml(r.payer) + '</div>' +
         '</div>' +
         '<div class="r-total">' + fmt(r.total, r.currency) + '</div>' +
-        '<button class="rm-btn" data-id="' + r.id + '">✕</button>';
+        (canEditReceipt(r) ? '<button class="rm-btn" data-id="' + r.id + '">✕</button>' : '');
       card.querySelector('.r-info').addEventListener('click', () => openReceiptDetail(r.id));
       card.querySelector('.r-total').addEventListener('click', () => openReceiptDetail(r.id));
       receiptsList.appendChild(card);
@@ -495,9 +696,21 @@
     });
     receiptsList.querySelectorAll('.confirm-yes-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        receipts = receipts.filter(r => r.id !== btn.dataset.id);
-        pendingDeleteId = null;
-        persist(); renderReceiptsList();
+        const id = btn.dataset.id;
+        if (community) {
+          communityAction(async () => {
+            const receipt = receipts.find(r => r.id === id);
+            await api('/communities/' + community.id + '/receipts/' + id, 'DELETE', { revision: receipt.revision });
+            receipts = receipts.filter(r => r.id !== id);
+            pendingDeleteId = null;
+            renderReceiptsList();
+          });
+        } else {
+          receipts = receipts.filter(r => r.id !== id);
+          pendingDeleteId = null;
+          persist();
+          renderReceiptsList();
+        }
       });
     });
     receiptsList.querySelectorAll('.confirm-no-btn').forEach(btn => {
@@ -509,10 +722,12 @@
   }
   renderReceiptsList();
 
+  function canEditReceipt(receipt) { return !community || receipt.editable; }
+
   function goHome() {
     editingReceiptId = null;
-    title.textContent = 'Домохозяйство';
-    shopLine.textContent = 'Твои чеки';
+    title.textContent = community?.name || 'Домохозяйство';
+    shopLine.textContent = community ? 'Чеки общины' : 'Твои чеки';
     renderReceiptsList();
     showOnly(['homeScreen']);
   }
@@ -610,7 +825,7 @@
 
   document.getElementById('addReceiptBtn').addEventListener('click', () => {
     const names = getCleanParticipants();
-    if (names.length < 2) {
+    if (!community && names.length < 2) {
       participantsError.textContent = 'Впиши имена хотя бы двух участников, прежде чем добавлять чек.';
       participantsError.classList.add('show');
       return;
@@ -621,6 +836,7 @@
     draftParticipants = [...participants];
     renderReceiptParticipantsChips();
     renderPayerSelect();
+    if (community) document.getElementById('payerSelect').value = community.label;
     document.getElementById('shopNameInput').value = '';
     document.getElementById('receiptCurrencySelect').value = '֏';
     document.getElementById('payerError').classList.remove('show');
@@ -805,7 +1021,9 @@
   let index = 0;
   let assignments = [];
   let editingReceiptId = null;
+  let draftReceiptId;
   const assignCard = document.getElementById('assignCard');
+  const assignError = document.getElementById('assignError');
   const nextItemBtn = document.getElementById('nextItemBtn');
   const backItemBtn = document.getElementById('backItemBtn');
   const progressFill = document.getElementById('progressFill');
@@ -818,8 +1036,10 @@
     }
     RECEIPT = draftItems.map(it => ({ name: it.name, qty: it.qty, price: it.price, sum: it.sum }));
     index = 0;
-    assignments = RECEIPT.map(() => ({ claims: {}, owners: [], remainderWith: [] }));
+    assignments = RECEIPT.map(() => ({ claims: Object.create(null), owners: [], remainderWith: [] }));
     editingReceiptId = null;
+    draftReceiptId = community ? crypto.randomUUID() : null;
+    assignError.classList.remove('show');
     document.getElementById('cancelReassignBtn').classList.add('hidden');
     title.textContent = 'Кто что брал?';
     shopLine.textContent = 'Шаг 3 из 3 · ' + draftShop;
@@ -927,8 +1147,8 @@
     }
   });
 
-  function finishReceipt() {
-    const personalTotals = {}; const sharedTotals = {};
+  async function finishReceipt() {
+    const personalTotals = Object.create(null); const sharedTotals = Object.create(null);
     draftParticipants.forEach(p => { personalTotals[p] = 0; sharedTotals[p] = 0; });
     let total = 0;
     const breakdown = [];
@@ -967,28 +1187,15 @@
       }
     });
 
-    const owed = {};
+    const owed = Object.create(null);
     draftParticipants.forEach(p => { owed[p] = (personalTotals[p] || 0) + (sharedTotals[p] || 0); });
 
-    if (editingReceiptId) {
-      const existing = receipts.find(r => r.id === editingReceiptId);
-      existing.owed = owed;
-      existing.items = RECEIPT;
-      existing.breakdown = breakdown;
-      existing.participants = draftParticipants;
-      existing.total = total;
-      existing.payer = draftPayer;
-      persist();
-      const finishedId = editingReceiptId;
-      editingReceiptId = null;
-      openReceiptDetail(finishedId);
-      return;
-    }
-
-    const receipt = {
-      id: 'r_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    const previous = receipts.find(r => r.id === editingReceiptId);
+    let receipt = {
+      ...previous,
+      id: previous?.id || draftReceiptId || ('r_' + Date.now() + '_' + Math.floor(Math.random() * 1000)),
       shop: draftShop,
-      date: todayLabel(),
+      date: previous?.date || todayLabel(),
       payer: draftPayer,
       currency: draftCurrency,
       total: total,
@@ -997,9 +1204,37 @@
       breakdown: breakdown,
       participants: draftParticipants
     };
-    receipts.push(receipt);
+
+    if (community) {
+      communityEpoch++;
+      const saveControls = [backItemBtn, nextItemBtn, document.getElementById('cancelReassignBtn')];
+      saveControls.forEach(button => { button.disabled = true; });
+      assignCard.inert = true;
+      assignError.classList.remove('show');
+      try {
+        const result = await api('/communities/' + community.id + '/receipts/' + receipt.id, 'PUT',
+          { ...receipt, revision: previous?.revision ?? 0 });
+        receipt = result.receipt;
+      } catch (error) {
+        index = RECEIPT.length - 1;
+        renderAssignCard();
+        assignError.textContent = error.message;
+        assignError.classList.add('show');
+        return;
+      } finally {
+        saveControls.forEach(button => { button.disabled = false; });
+        assignCard.inert = false;
+      }
+    }
+    if (previous) receipts[receipts.indexOf(previous)] = receipt;
+    else receipts.push(receipt);
     persist();
 
+    if (previous) {
+      editingReceiptId = null;
+      openReceiptDetail(receipt.id);
+      return;
+    }
     document.getElementById('savedSummary').textContent =
       draftShop + ' · ' + fmt(total, draftCurrency) + ' · заплатил(а) ' + draftPayer;
     title.textContent = 'Готово';
@@ -1057,13 +1292,13 @@
     showOnly(['receiptDetailScreen']);
 
     const reassignBtn = document.getElementById('reassignBtn');
-    reassignBtn.classList.remove('hidden');
+    reassignBtn.classList.toggle('hidden', !canEditReceipt(r));
     reassignBtn.onclick = () => startReassign(r.id);
   }
 
   function startReassign(id) {
     const r = receipts.find(x => x.id === id);
-    if (!r || !r.items) return;
+    if (!r || !r.items || !canEditReceipt(r)) return;
     draftShop = r.shop;
     draftPayer = r.payer;
     draftCurrency = r.currency || '֏';
@@ -1071,7 +1306,8 @@
     RECEIPT = r.items.map(it => ({ name: it.name, qty: it.qty, price: it.price, sum: it.sum }));
     editingReceiptId = id;
     index = 0;
-    assignments = RECEIPT.map(() => ({ claims: {}, owners: [], remainderWith: [] }));
+    assignments = RECEIPT.map(() => ({ claims: Object.create(null), owners: [], remainderWith: [] }));
+    assignError.classList.remove('show');
 
     showReassignPayerStep();
   }
@@ -1122,7 +1358,7 @@
 
   function renderSettle() {
     // group receipts by currency — balances across different currencies can't be summed
-    const byCurrency = {};
+    const byCurrency = Object.create(null);
     receipts.forEach(r => {
       const curr = r.currency || '֏';
       if (!byCurrency[curr]) byCurrency[curr] = [];
@@ -1141,7 +1377,7 @@
       receiptsInCurr.forEach(r => { names.add(r.payer); Object.keys(r.owed).forEach(n => names.add(n)); });
       const allNames = Array.from(names);
 
-      const balance = {};
+      const balance = Object.create(null);
       allNames.forEach(n => balance[n] = 0);
       receiptsInCurr.forEach(r => {
         balance[r.payer] = (balance[r.payer] || 0) + r.total;
@@ -1195,7 +1431,26 @@
   }
 
   goHome();
-  window.Telegram?.WebApp?.ready();
+  telegram?.ready();
+  if (receiptApi && telegram?.initData) {
+    document.getElementById('communityPanel').classList.remove('hidden');
+    const inviteParam = telegram.initDataUnsafe?.start_param;
+    const hasInvite = /^join_[a-f0-9]{48}$/.test(inviteParam || '');
+    if (hasInvite) {
+      document.getElementById('communityActions').open = true;
+      document.getElementById('communityInviteCode').value = inviteParam;
+    }
+    communityAction(async () => {
+      const choices = await listCommunities();
+      const saved = loadJSON('rs_community', null);
+      const initial = saved === null && choices.length === 1 ? choices[0].id : saved;
+      if (!hasInvite && choices.some(choice => choice.id === initial)) await openCommunity(initial);
+    });
+    window.addEventListener('focus', refreshActiveCommunity);
+    document.addEventListener('visibilitychange', refreshActiveCommunity);
+    telegram.onEvent?.('activated', refreshActiveCommunity);
+    setInterval(refreshActiveCommunity, 10000);
+  }
 })();
 </script>
 
