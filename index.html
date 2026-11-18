@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <!-- После изменения встроенного JS обнови SHA-256 для его текста в UTF-8 с переводами строк LF. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-tNth3R1+IJZGk+ct94TzIfzkmHi7lBvSoR7+/NCZtks=' https://telegram.org/js/telegram-web-app.js; style-src 'unsafe-inline'; connect-src https://receipt-splitter-api.rs-dbelousovww.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Fv311yn5utLCAAD+9MMWqogso2IceBYJKDcyBmXlSm0=' https://telegram.org/js/telegram-web-app.js; style-src 'unsafe-inline'; connect-src https://receipt-splitter-api.rs-dbelousovww.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="receipt-api" content="https://receipt-splitter-api.rs-dbelousovww.workers.dev">
@@ -48,6 +48,8 @@
   .community-controls details { margin-top: 12px; }
   .community-controls summary { cursor: pointer; font-size: 14px; }
   .community-member { margin: 4px 0; overflow-wrap: anywhere; }
+  .community-member-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .community-member-row button { margin: 0; flex-shrink: 0; }
   .field { margin-bottom: 16px; }
   .field label { display: block; font-size: 13px; color: var(--ink-soft); margin-bottom: 8px; }
 
@@ -244,6 +246,14 @@
     <div class="panel">
       <p class="section-label">Участники</p>
       <div id="participantsList"></div>
+      <fieldset class="community-controls" id="membershipControls">
+        <button type="button" class="link-btn community-delete-btn hidden" id="leaveCommunityBtn">Выйти из общины</button>
+        <div class="hidden" id="memberRemovalConfirm">
+          <p class="confirm-text" id="memberRemovalWarning"></p>
+          <button type="button" class="confirm-yes-btn" id="confirmMemberRemovalBtn"></button>
+          <button type="button" class="confirm-no-btn" id="cancelMemberRemovalBtn">Отмена</button>
+        </div>
+      </fieldset>
       <button type="button" class="add-participant-btn" id="addParticipantBtn">+ добавить участника</button>
       <p class="error-box" id="participantsError"></p>
     </div>
@@ -541,6 +551,12 @@
   const copyInviteBtn = document.getElementById('copyInviteBtn');
   const showCommunityDeleteBtn = document.getElementById('showCommunityDeleteBtn');
   const communityDeleteConfirm = document.getElementById('communityDeleteConfirm');
+  const leaveCommunityBtn = document.getElementById('leaveCommunityBtn');
+  const memberRemovalConfirm = document.getElementById('memberRemovalConfirm');
+  const confirmMemberRemovalBtn = document.getElementById('confirmMemberRemovalBtn');
+  const cancelMemberRemovalBtn = document.getElementById('cancelMemberRemovalBtn');
+  let removableMembers = [];
+  let memberRemoval = null;
 
   function updateHomeActions() {
     const rosterDamaged = !community && damagedStorage.has('rs_participants');
@@ -550,6 +566,8 @@
     warning.classList.toggle('show', rosterDamaged || receiptsDamaged);
     document.getElementById('addReceiptBtn').disabled = communityBusy || rosterDamaged || receiptsDamaged;
     document.getElementById('settleBtn').disabled = communityBusy || receiptsDamaged;
+    document.getElementById('membershipControls').disabled = communityBusy;
+    participantsList.querySelectorAll('.remove-member-btn').forEach(button => { button.disabled = communityBusy; });
   }
 
   async function api(path, method = 'GET', body) {
@@ -624,14 +642,17 @@
       data ??= await api('/communities/' + id);
       community = data.community;
       participants = data.participants;
+      removableMembers = data.removableMembers || [];
       receipts = data.receipts;
     } else {
       community = null;
+      removableMembers = [];
       participants = readLocalList('rs_participants', ['', '', '', ''], entry => typeof entry === 'string');
       receipts = readLocalList('rs_receipts', [], validSavedReceipt);
     }
     if (previousId !== community?.id) {
       pendingDeleteId = null;
+      clearMemberRemoval();
       document.getElementById('inviteResult').classList.add('hidden');
       inviteText.value = '';
       setCommunityDeleteConfirmation(false);
@@ -640,6 +661,7 @@
     document.getElementById('inviteContactsBtn').classList.toggle('hidden', !community?.canInvite || !canPickContacts);
     document.getElementById('inviteActions').classList.toggle('hidden', !community?.canInvite || canPickContacts);
     document.getElementById('communityDeleteActions').classList.toggle('hidden', !community?.canDelete);
+    leaveCommunityBtn.classList.toggle('hidden', !community?.canLeave);
     communitySelect.value = id;
     try { localStorage.setItem('rs_community', JSON.stringify(id)); } catch {}
     participantsError.classList.remove('show');
@@ -672,6 +694,49 @@
     communityStatus.textContent = message;
     communityStatus.classList.remove('hidden');
   }
+
+  function clearMemberRemoval() {
+    memberRemoval = null;
+    memberRemovalConfirm.classList.add('hidden');
+  }
+
+  function confirmMembershipChange(id, label, trigger) {
+    if (communityBusy) return;
+    memberRemoval = { id, trigger };
+    const leaving = id === 'me';
+    document.getElementById('memberRemovalWarning').textContent = (leaving
+      ? 'Выйти из общины «' + community.name + '»? Для возвращения понадобится новое приглашение.'
+      : 'Удалить «' + label + '» из общины? Участник потеряет доступ.') + ' Чеки и долги сохранятся.';
+    confirmMemberRemovalBtn.textContent = leaving ? 'Да, выйти' : 'Да, удалить участника';
+    memberRemovalConfirm.classList.remove('hidden');
+    cancelMemberRemovalBtn.focus();
+  }
+
+  leaveCommunityBtn.addEventListener('click', () => {
+    if (community?.canLeave) confirmMembershipChange('me', '', leaveCommunityBtn);
+  });
+  cancelMemberRemovalBtn.addEventListener('click', () => {
+    memberRemoval?.trigger.focus();
+    clearMemberRemoval();
+  });
+  confirmMemberRemovalBtn.addEventListener('click', () => {
+    if (!community || !memberRemoval) return;
+    communityAction(async () => {
+      const { id } = memberRemoval;
+      const communityId = community.id;
+      try {
+        await api('/communities/' + communityId + '/members/' + id, 'DELETE');
+      } catch (error) {
+        if (error.status !== 404) throw error;
+      }
+      clearMemberRemoval();
+      if (id === 'me') await forgetCommunity(communityId, 'Ты вышел из общины.');
+      else {
+        await openCommunity(communityId);
+        showCommunityStatus('Участник удалён. Чеки и долги сохранены.');
+      }
+    });
+  });
 
   showCommunityDeleteBtn.addEventListener('click', () => {
     if (!community?.canDelete) return;
@@ -750,7 +815,7 @@
   });
 
   function showingCommunityHome() {
-    return community && !communityBusy && !pendingDeleteId && !document.hidden &&
+    return community && !communityBusy && !pendingDeleteId && !memberRemoval && !document.hidden &&
       !document.getElementById('homeScreen').classList.contains('hidden');
   }
 
@@ -763,6 +828,7 @@
       const data = await api('/communities/' + id);
       if (!showingCommunityHome() || communityEpoch !== epoch || community.id !== id) return;
       participants = data.participants;
+      removableMembers = data.removableMembers || [];
       receipts = data.receipts;
       renderParticipants();
       renderReceiptsList();
@@ -784,10 +850,24 @@
     rosterButton.disabled = rosterDamaged;
     participants.forEach((name, i) => {
       if (community) {
+        const row = document.createElement('div');
+        row.className = 'community-member-row';
         const member = document.createElement('p');
         member.className = 'community-member';
         member.textContent = name;
-        participantsList.appendChild(member);
+        row.appendChild(member);
+        const removable = removableMembers.find(entry => entry.label === name);
+        if (removable) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'link-btn community-delete-btn remove-member-btn';
+          button.textContent = 'Удалить';
+          button.setAttribute('aria-label', 'Удалить участника ' + name);
+          button.disabled = communityBusy;
+          button.addEventListener('click', () => confirmMembershipChange(removable.user_id, name, button));
+          row.appendChild(button);
+        }
+        participantsList.appendChild(row);
         return;
       }
       const row = document.createElement('div');
