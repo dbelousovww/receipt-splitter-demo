@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <!-- После изменения встроенного JS обнови SHA-256 для его текста в UTF-8 с переводами строк LF. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-TK5Hzw5R2Ra6JCpUXayWPLiMl8Fh9luJBIweFt0bdlk=' https://telegram.org/js/telegram-web-app.js; style-src 'unsafe-inline'; connect-src https://receipt-splitter-api.rs-dbelousovww.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-l6J+4/BLYPfY0f8Lpa8dh2At/pSV6aWp4tK26DL/WkQ=' https://telegram.org/js/telegram-web-app.js; style-src 'unsafe-inline'; connect-src https://receipt-splitter-api.rs-dbelousovww.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="receipt-api" content="https://receipt-splitter-api.rs-dbelousovww.workers.dev">
@@ -202,6 +202,7 @@
   <div id="homeScreen">
     <p class="error-box" id="localStorageError" role="alert"></p>
     <div class="panel hidden" id="communityPanel">
+      <p class="error-box" id="communityError" role="alert"></p>
       <fieldset class="community-controls" id="communityControls">
         <div class="field">
           <label for="communitySelect">Община</label>
@@ -237,7 +238,6 @@
         </div>
       </fieldset>
       <p class="empty-hint hidden" id="communityStatus" role="status"></p>
-      <p class="error-box" id="communityError" role="alert"></p>
     </div>
     <div class="panel">
       <p class="section-label">Участники</p>
@@ -583,6 +583,7 @@
     try { await action(); }
     catch (error) {
       communitySelect.value = community?.id || '';
+      communityStatus.classList.add('hidden');
       communityError.textContent = error.message;
       communityError.classList.add('show');
     } finally {
@@ -600,10 +601,10 @@
     return communities;
   }
 
-  async function openCommunity(id) {
+  async function openCommunity(id, data) {
     const previousId = community?.id;
     if (id) {
-      const data = await api('/communities/' + id);
+      data ??= await api('/communities/' + id);
       community = data.community;
       participants = data.participants;
       receipts = data.receipts;
@@ -1587,13 +1588,15 @@
 
   goHome();
   telegram?.ready();
+  const inviteParam = new URLSearchParams(telegram?.initData).get('start_param') ||
+    new URLSearchParams(window.location.search).get('tgWebAppStartParam');
   if (receiptApi && telegram?.initData) {
     document.getElementById('communityPanel').classList.remove('hidden');
-    const inviteParam = new URLSearchParams(telegram.initData).get('start_param');
     communityAction(async () => {
       let joinedId;
       let inviteError;
       if (inviteParam?.startsWith('join_')) {
+        showCommunityStatus('Открываем общину по приглашению…');
         const code = /^join_([a-f0-9]{48})$/.exec(inviteParam)?.[1];
         try {
           if (!code) throw new Error('Ссылка-приглашение недействительна.');
@@ -1603,21 +1606,34 @@
           inviteError = error;
         }
       }
+      if (joinedId) {
+        const [choices, details] = await Promise.allSettled([
+          listCommunities(),
+          api('/communities/' + joinedId)
+        ]);
+        if (choices.status === 'rejected') throw choices.reason;
+        if (details.status === 'rejected') throw details.reason;
+        await openCommunity(joinedId, details.value);
+        showCommunityStatus('Ты в общине «' + community.name + '».');
+        return;
+      }
       const choices = await listCommunities();
+      if (inviteError) throw inviteError;
       const saved = loadJSON('rs_community', null);
       const initial = saved === null && choices.length === 1 ? choices[0].id : saved;
-      if (joinedId) {
-        await openCommunity(joinedId);
-        showCommunityStatus('Ты в общине «' + community.name + '».');
-      } else if (choices.some(choice => choice.id === initial)) {
+      if (choices.some(choice => choice.id === initial)) {
         await openCommunity(initial);
       }
-      if (inviteError) throw inviteError;
     });
     window.addEventListener('focus', refreshActiveCommunity);
     document.addEventListener('visibilitychange', refreshActiveCommunity);
     telegram.onEvent?.('activated', refreshActiveCommunity);
     setInterval(refreshActiveCommunity, 10000);
+  } else if (receiptApi && inviteParam?.startsWith('join_')) {
+    document.getElementById('communityPanel').classList.remove('hidden');
+    document.getElementById('communityControls').disabled = true;
+    communityError.textContent = 'Открой исходную ссылку-приглашение в приложении Telegram.';
+    communityError.classList.add('show');
   }
 })();
 </script>
